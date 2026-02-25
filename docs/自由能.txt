@@ -1,0 +1,746 @@
+# 主动推理风险评估系统：完整设计方案
+
+## 一、系统概述
+
+### 1.1 设计目标
+
+将当前的**静态风险评估**升级为**动态主动推理框架**，使无人机能够：
+
+1. **预测**未来状态轨迹
+2. **评估**不同行动的期望自由能
+3. **选择**最优行动以最小化长期风险
+4. **更新**信念以适应环境变化
+
+### 1.2 核心公式体系
+
+**期望自由能（Expected Free Energy）**：
+
+$$
+G(\pi) = \sum_{\tau=1}^{T} \gamma^{\tau} \cdot \mathbb{E}_{Q(o_\tau, s_\tau | \pi)} \left[ F(o_\tau, s_\tau) + \alpha \cdot H[Q(s_\tau)] \right]
+$$
+
+其中：
+- $\pi$：策略（行动序列）
+- $\gamma$：时间折扣因子，$\gamma \in [0,1]$
+- $F(o_\tau, s_\tau)$：$\tau$ 时刻的即时自由能
+- $H[Q(s_\tau)]$：状态信念的熵（不确定性）
+- $\alpha$：探索-利用权衡系数
+
+**最优策略选择**：
+
+$$
+\pi^* = \arg\min_{\pi \in \Pi} G(\pi)
+$$
+
+---
+
+## 二、模块架构
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                    ActiveInferenceRiskSystem                   │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐     │
+│  │    M17A      │    │    M17B      │    │    M17C      │     │
+│  │ StateSpace   │───▶│ Generative   │───▶│  Trajectory  │     │
+│  │              │    │    Model     │    │  Predictor   │     │
+│  └──────────────┘    └──────────────┘    └──────────────┘     │
+│         │                   │                   │              │
+│         ▼                   ▼                   ▼              │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐     │
+│  │    M17D      │    │    M17E      │    │    M17F      │     │
+│  │   Belief     │◀──▶│ FreeEnergy   │◀──▶│   Action     │     │
+│  │   Updater    │    │  Calculator  │    │  Selector    │     │
+│  └──────────────┘    └──────────────┘    └──────────────┘     │
+│         │                   │                   │              │
+│         └───────────────────┼───────────────────┘              │
+│                             ▼                                  │
+│                    ┌──────────────┐                            │
+│                    │    M17G      │                            │
+│                    │ Perception   │                            │
+│                    │ ActionLoop   │                            │
+│                    └──────────────┘                            │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 三、模块详细设计
+
+---
+
+### 模块 M17A：StateSpace（状态空间定义）
+
+#### 功能描述
+
+定义系统的状态空间、观测空间和行动空间，为后续模块提供统一的数据结构。
+
+#### 状态向量定义
+
+$$
+\mathbf{s}_t = \begin{bmatrix} E_t \\ T_t \\ h_t \\ p_t \\ d_t \\ \sigma_t \end{bmatrix}
+$$
+
+| 符号 | 含义 | 单位 | 范围 |
+|------|------|------|------|
+| $E_t$ | 剩余能量 | J | $[0, E_{max}]$ |
+| $T_t$ | 已用时间 | s | $[0, T_{max}]$ |
+| $h_t$ | 健康度 | - | $[0, 1]$ |
+| $p_t$ | 任务进度 | - | $[0, 1]$ |
+| $d_t$ | 距离目标/基站距离 | m | $[0, d_{max}]$ |
+| $\sigma_t$ | 环境不确定性 | - | $[0, 1]$ |
+
+#### 观测向量定义
+
+$$
+\mathbf{o}_t = \begin{bmatrix} \hat{E}_t \\ \hat{h}_t \\ q_t \\ w_t \end{bmatrix}
+$$
+
+| 符号 | 含义 | 说明 |
+|------|------|------|
+| $\hat{E}_t$ | 能量观测 | 带噪声的能量读数 |
+| $\hat{h}_t$ | 健康度观测 | 传感器检测值 |
+| $q_t$ | 信道质量 | 通信链路状态 |
+| $w_t$ | 环境因素 | 风速、温度等 |
+
+#### 行动空间定义
+
+$$
+\mathcal{A} = \{ a_1, a_2, a_3, a_4, a_5 \}
+$$
+
+| 行动 | 符号 | 描述 | 对状态的影响 |
+|------|------|------|-------------|
+| 继续执行 | $a_{continue}$ | 维持当前任务 | 标准能耗、进度推进 |
+| 保存检查点 | $a_{checkpoint}$ | 保存当前状态 | 时间开销、降低恢复成本 |
+| 降低功率 | $a_{reduce}$ | 降低计算/飞行功率 | 降低能耗、进度变慢 |
+| 请求转移 | $a_{handover}$ | 请求任务迁移 | 通信开销、可能失败 |
+| 中止返航 | $a_{abort}$ | 放弃任务返航 | 任务失败、保证安全 |
+
+#### 子模块清单
+
+| 子模块 | 功能 |
+|--------|------|
+| `StateVector` | 状态向量数据结构 |
+| `ObservationVector` | 观测向量数据结构 |
+| `ActionSet` | 行动枚举与参数 |
+| `StateNormalizer` | 状态归一化工具 |
+
+---
+
+### 模块 M17B：GenerativeModel（生成模型）
+
+#### 功能描述
+
+建立世界的内部模型，描述状态如何演化、观测如何产生。这是主动推理的核心组件。
+
+#### 数学定义
+
+**完整生成模型**：
+
+$$
+P(\tilde{o}, \tilde{s}, \pi) = P(\pi) \prod_{\tau=0}^{T} P(o_\tau | s_\tau) \cdot P(s_\tau | s_{\tau-1}, a_{\tau-1})
+$$
+
+其中：
+- $P(\pi)$：策略先验（偏好某些行动模式）
+- $P(o_\tau | s_\tau)$：似然模型（状态如何产生观测）
+- $P(s_\tau | s_{\tau-1}, a_{\tau-1})$：转移模型（行动如何改变状态）
+
+#### 状态转移模型
+
+**能量转移**：
+
+$$
+E_{t+1} = E_t - P(a_t) \cdot \Delta t - \epsilon_E
+$$
+
+其中功率消耗与行动相关：
+
+$$
+P(a) = \begin{cases}
+P_{base} + P_{compute} & a = a_{continue} \\
+P_{base} + P_{checkpoint} & a = a_{checkpoint} \\
+P_{base} \cdot \eta_{reduce} & a = a_{reduce} \\
+P_{base} + P_{comm} & a = a_{handover} \\
+P_{flight} & a = a_{abort}
+\end{cases}
+$$
+
+**时间转移**：
+
+$$
+T_{t+1} = T_t + \Delta t \cdot \kappa(a_t)
+$$
+
+其中时间系数：
+
+$$
+\kappa(a) = \begin{cases}
+1.0 & a = a_{continue} \\
+1.0 + \kappa_{cp} & a = a_{checkpoint} \\
+1.0 / \eta_{reduce} & a = a_{reduce} \\
+1.0 + \kappa_{handover} & a = a_{handover} \\
+\infty & a = a_{abort}
+\end{cases}
+$$
+
+**健康度转移**：
+
+$$
+h_{t+1} = h_t \cdot \lambda_h - \delta_h(a_t) + \epsilon_h
+$$
+
+其中 $\lambda_h \in (0,1)$ 为自然衰减率，$\delta_h(a)$ 为行动导致的额外损耗。
+
+**进度转移**：
+
+$$
+p_{t+1} = \min\left(1, \; p_t + \frac{\Delta t \cdot \eta(a_t)}{T_{task}}\right)
+$$
+
+其中效率因子：
+
+$$
+\eta(a) = \begin{cases}
+1.0 & a = a_{continue} \\
+0.0 & a = a_{checkpoint} \\
+\eta_{reduce} & a = a_{reduce} \\
+0.0 & a = a_{handover} \\
+0.0 & a = a_{abort}
+\end{cases}
+$$
+
+#### 似然模型（观测模型）
+
+$$
+P(o_t | s_t) = \mathcal{N}(o_t; \; g(s_t), \; \Sigma_o)
+$$
+
+其中 $g(s_t)$ 为观测函数，$\Sigma_o$ 为观测噪声协方差矩阵。
+
+#### 子模块清单
+
+| 子模块 | 功能 |
+|--------|------|
+| `TransitionModel` | 状态转移函数 $P(s'|s,a)$ |
+| `LikelihoodModel` | 似然函数 $P(o|s)$ |
+| `ActionEffects` | 行动效果参数表 |
+| `NoiseModel` | 过程噪声与观测噪声 |
+
+---
+
+### 模块 M17C：TrajectoryPredictor（轨迹预测器）
+
+#### 功能描述
+
+给定当前状态和策略，预测未来状态序列及其不确定性。
+
+#### 核心公式
+
+**确定性轨迹预测**：
+
+$$
+\hat{s}_{\tau+1} = f(\hat{s}_\tau, a_\tau), \quad \tau = t, t+1, \ldots, t+H-1
+$$
+
+**不确定性传播**（使用协方差传播）：
+
+$$
+\Sigma_{\tau+1} = F_\tau \Sigma_\tau F_\tau^T + Q
+$$
+
+其中：
+- $F_\tau = \frac{\partial f}{\partial s}\big|_{\hat{s}_\tau, a_\tau}$：转移函数的雅可比矩阵
+- $Q$：过程噪声协方差
+
+**简化版本**（标量不确定性）：
+
+$$
+\sigma_{\tau+1}^2 = \lambda_\sigma \cdot \sigma_\tau^2 + q_\tau(a_\tau)
+$$
+
+其中 $\lambda_\sigma > 1$ 表示不确定性随时间增长，$q_\tau(a)$ 为行动引入的额外不确定性。
+
+#### 蒙特卡洛轨迹采样
+
+对于复杂场景，使用采样方法：
+
+$$
+s_\tau^{(i)} \sim P(s_\tau | s_{\tau-1}^{(i)}, a_{\tau-1}), \quad i = 1, \ldots, N_{samples}
+$$
+
+统计量估计：
+
+$$
+\hat{\mu}_\tau = \frac{1}{N} \sum_{i=1}^{N} s_\tau^{(i)}, \quad \hat{\Sigma}_\tau = \frac{1}{N-1} \sum_{i=1}^{N} (s_\tau^{(i)} - \hat{\mu}_\tau)(s_\tau^{(i)} - \hat{\mu}_\tau)^T
+$$
+
+#### 子模块清单
+
+| 子模块 | 功能 |
+|--------|------|
+| `DeterministicPredictor` | 确定性轨迹预测 |
+| `UncertaintyPropagator` | 不确定性传播（线性化或粒子） |
+| `MonteCarloSampler` | 蒙特卡洛轨迹采样 |
+| `TrajectoryBuffer` | 轨迹存储与管理 |
+
+---
+
+### 模块 M17D：BeliefUpdater（信念更新器）
+
+#### 功能描述
+
+根据观测更新对当前状态的信念分布，实现主动推理中的"感知"功能。
+
+#### 数学框架
+
+**信念表示**（高斯近似）：
+
+$$
+Q(s_t) = \mathcal{N}(s_t; \; \mu_t, \; \Sigma_t)
+$$
+
+**贝叶斯更新**：
+
+$$
+Q(s_t | o_t) \propto P(o_t | s_t) \cdot Q(s_t)
+$$
+
+#### 变分自由能最小化
+
+**变分自由能**：
+
+$$
+F = D_{KL}[Q(s) \| P(s|o)] - \log P(o)
+$$
+
+等价形式（便于优化）：
+
+$$
+F = \underbrace{\mathbb{E}_{Q(s)}[-\log P(o|s)]}_{\text{重构误差}} + \underbrace{D_{KL}[Q(s) \| P(s)]}_{\text{复杂度}}
+$$
+
+#### 梯度下降更新
+
+**均值更新**：
+
+$$
+\mu_t \leftarrow \mu_t - \eta \cdot \nabla_\mu F
+$$
+
+其中梯度：
+
+$$
+\nabla_\mu F = -\Sigma_o^{-1}(o_t - g(\mu_t)) \cdot \nabla_\mu g + \Sigma_t^{-1}(\mu_t - \mu_{prior})
+$$
+
+**简化版本**（预测误差最小化）：
+
+$$
+\mu_t \leftarrow \mu_t + K_t (o_t - \hat{o}_t)
+$$
+
+其中 $K_t$ 为卡尔曼增益，$\hat{o}_t = g(\mu_t)$ 为预测观测。
+
+#### 精度加权
+
+$$
+\mu_{posterior} = \frac{\Pi_{prior} \mu_{prior} + \Pi_{likelihood} \mu_{likelihood}}{\Pi_{prior} + \Pi_{likelihood}}
+$$
+
+其中精度 $\Pi = \Sigma^{-1}$。
+
+#### 子模块清单
+
+| 子模块 | 功能 |
+|--------|------|
+| `GaussianBelief` | 高斯信念表示 |
+| `KalmanUpdater` | 卡尔曼滤波更新 |
+| `VariationalUpdater` | 变分推断更新 |
+| `PrecisionEstimator` | 动态精度估计 |
+
+---
+
+### 模块 M17E：FreeEnergyCalculator（自由能计算器）
+
+#### 功能描述
+
+计算即时自由能和期望自由能，这是决策的核心评估指标。
+
+#### 即时自由能
+
+**分解形式**（与当前代码兼容）：
+
+$$
+F_t = w_E \cdot F_t^{energy} + w_T \cdot F_t^{time} + w_h \cdot F_t^{health} + w_p \cdot F_t^{progress}
+$$
+
+各分量定义：
+
+$$
+F_t^{energy} = -\log\left(\frac{E_t}{E_{required}(p_t)}\right)
+$$
+
+$$
+F_t^{time} = -\log\left(\frac{T_{max} - T_t}{T_{remaining}^{required}(p_t)}\right)
+$$
+
+$$
+F_t^{health} = -\log(h_t \cdot q_t)
+$$
+
+$$
+F_t^{progress} = -\log\left(\frac{p_t + \epsilon}{p_t^{expected} + \epsilon}\right)
+$$
+
+#### 期望自由能（关键扩展）
+
+$$
+G(\pi) = \underbrace{\sum_{\tau} \gamma^\tau \mathbb{E}_{Q}[F_\tau]}_{\text{实用价值（Pragmatic）}} + \underbrace{\alpha \sum_{\tau} \gamma^\tau H[Q(o_\tau | \pi)]}_{\text{认知价值（Epistemic）}}
+$$
+
+**实用价值项**（风险规避）：
+
+$$
+G_{pragmatic}(\pi) = \sum_{\tau=1}^{H} \gamma^{\tau} \cdot F(\hat{s}_\tau^\pi)
+$$
+
+**认知价值项**（信息增益）：
+
+$$
+G_{epistemic}(\pi) = \sum_{\tau=1}^{H} \gamma^{\tau} \cdot \text{tr}(\Sigma_\tau^\pi)
+$$
+
+或使用熵：
+
+$$
+G_{epistemic}(\pi) = \sum_{\tau=1}^{H} \gamma^{\tau} \cdot H[Q(s_\tau | \pi)]
+$$
+
+其中高斯熵：
+
+$$
+H[\mathcal{N}(\mu, \Sigma)] = \frac{1}{2} \log\det(2\pi e \Sigma)
+$$
+
+#### 行动特定的期望自由能
+
+对于单步决策：
+
+$$
+G(a) = \mathbb{E}_{Q(s'|s,a)}[F(s')] + \alpha \cdot H[Q(s'|s,a)]
+$$
+
+展开为：
+
+$$
+G(a) = F(\hat{s}') + \frac{1}{2}\text{tr}\left(\nabla^2 F \cdot \Sigma_{s'}\right) + \alpha \cdot \text{tr}(\Sigma_{s'})
+$$
+
+#### 子模块清单
+
+| 子模块 | 功能 |
+|--------|------|
+| `InstantFreeEnergy` | 即时自由能计算（当前已有） |
+| `ExpectedFreeEnergy` | 期望自由能计算 |
+| `PragmaticValue` | 实用价值（目标导向） |
+| `EpistemicValue` | 认知价值（信息增益） |
+| `RiskMetrics` | 风险指标转换 |
+
+---
+
+### 模块 M17F：ActionSelector（行动选择器）
+
+#### 功能描述
+
+基于期望自由能选择最优行动，实现主动推理中的"行动"功能。
+
+#### 策略选择
+
+**确定性选择**（贪婪）：
+
+$$
+a^* = \arg\min_{a \in \mathcal{A}} G(a)
+$$
+
+**概率性选择**（Softmax）：
+
+$$
+P(a) = \frac{\exp(-\beta \cdot G(a))}{\sum_{a' \in \mathcal{A}} \exp(-\beta \cdot G(a'))}
+$$
+
+其中 $\beta > 0$ 为逆温度参数：
+- $\beta \to 0$：随机选择（探索）
+- $\beta \to \infty$：贪婪选择（利用）
+
+#### 多步规划
+
+**策略空间**：
+
+$$
+\Pi = \mathcal{A}^H = \{(a_1, a_2, \ldots, a_H) | a_i \in \mathcal{A}\}
+$$
+
+**复杂度问题**：$|\Pi| = |\mathcal{A}|^H$，需要剪枝策略。
+
+**树搜索剪枝**：
+
+$$
+\text{Prune if } G_{partial}(\pi_{1:k}) > G_{best} + \delta
+$$
+
+**滚动时域优化**：
+
+$$
+\pi^*_{1:H} = \arg\min_\pi G(\pi)
+$$
+
+只执行 $a_1^*$，然后重新规划。
+
+#### 约束处理
+
+**硬约束**（必须满足）：
+
+$$
+\mathcal{A}_{feasible}(s) = \{a \in \mathcal{A} | C(s, a) \leq 0\}
+$$
+
+例如：
+- $E_t - P(a) \cdot \Delta t \geq E_{min}$（能量约束）
+- $T_t + \kappa(a) \cdot \Delta t \leq T_{max}$（时间约束）
+
+**软约束**（惩罚项）：
+
+$$
+G_{constrained}(a) = G(a) + \lambda \cdot \max(0, C(s,a))
+$$
+
+#### 子模块清单
+
+| 子模块 | 功能 |
+|--------|------|
+| `GreedySelector` | 贪婪行动选择 |
+| `SoftmaxSelector` | 概率性行动选择 |
+| `TreeSearchPlanner` | 多步树搜索 |
+| `ConstraintChecker` | 约束可行性检查 |
+| `RollingHorizonOptimizer` | 滚动时域优化 |
+
+---
+
+### 模块 M17G：PerceptionActionLoop（感知-行动循环）
+
+#### 功能描述
+
+整合所有模块，实现完整的主动推理循环。
+
+#### 主循环流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Main Loop                               │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│   1. OBSERVE                                                 │
+│      o_t ← get_observation()                                │
+│                                                              │
+│   2. PERCEIVE (Belief Update)                               │
+│      Q(s_t) ← update_belief(Q(s_{t-1}), o_t)               │
+│      F_t ← compute_free_energy(Q(s_t))                      │
+│                                                              │
+│   3. PREDICT (Trajectory)                                   │
+│      For each a ∈ A:                                        │
+│          trajectory_a ← predict(Q(s_t), a, horizon)         │
+│          G(a) ← compute_expected_free_energy(trajectory_a)  │
+│                                                              │
+│   4. ACT (Action Selection)                                 │
+│      a* ← select_action({G(a)})                             │
+│      execute(a*)                                            │
+│                                                              │
+│   5. LEARN (Optional)                                       │
+│      update_model_parameters(o_t, s_t, a*)                  │
+│                                                              │
+│   6. LOOP                                                   │
+│      t ← t + 1                                              │
+│      goto 1                                                 │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 时间预算分配
+
+设每个决策周期时间预算为 $\Delta T_{budget}$：
+
+| 步骤 | 时间分配 | 优先级 |
+|------|----------|--------|
+| 观测获取 | 5% | 固定 |
+| 信念更新 | 15% | 可调 |
+| 轨迹预测 | 40% | 可调 |
+| 行动选择 | 30% | 可调 |
+| 执行与记录 | 10% | 固定 |
+
+**自适应精度**：
+
+当时间紧张时：
+
+$$
+H_{effective} = \max\left(1, \; H_{max} \cdot \frac{T_{available}}{T_{budget}}\right)
+$$
+
+$$
+N_{samples}^{effective} = \max\left(10, \; N_{samples} \cdot \frac{T_{available}}{T_{budget}}\right)
+$$
+
+#### 子模块清单
+
+| 子模块 | 功能 |
+|--------|------|
+| `MainController` | 主循环控制器 |
+| `ObservationInterface` | 观测获取接口 |
+| `ExecutionInterface` | 行动执行接口 |
+| `TimeBudgetManager` | 时间预算管理 |
+| `LoggingModule` | 日志记录 |
+
+---
+
+## 四、模块间接口定义
+
+### 4.1 数据结构
+
+```
+StateVector:
+    E: float          # 能量 [J]
+    T: float          # 时间 [s]
+    h: float          # 健康度 [0,1]
+    p: float          # 进度 [0,1]
+    d: float          # 距离 [m]
+    sigma: float      # 不确定性 [0,1]
+
+BeliefState:
+    mean: StateVector
+    covariance: Matrix[6,6]
+
+Trajectory:
+    states: List[StateVector]
+    uncertainties: List[float]
+    timestamps: List[float]
+
+ActionResult:
+    action: Action
+    G_value: float
+    confidence: float
+    feasible: bool
+```
+
+### 4.2 模块接口
+
+| 接口 | 输入 | 输出 |
+|------|------|------|
+| `GenerativeModel.predict` | $(s_t, a_t)$ | $s_{t+1}$ |
+| `TrajectoryPredictor.predict` | $(s_t, \pi, H)$ | `Trajectory` |
+| `BeliefUpdater.update` | $(Q(s), o_t)$ | $Q(s|o)$ |
+| `FreeEnergyCalculator.compute_G` | `Trajectory` | $G$ |
+| `ActionSelector.select` | $\{G(a)\}$ | $a^*$ |
+
+---
+
+## 五、参数配置表
+
+### 5.1 时间参数
+
+| 参数 | 符号 | 默认值 | 说明 |
+|------|------|--------|------|
+| 预测时域 | $H$ | 10 | 向前预测步数 |
+| 时间步长 | $\Delta t$ | 0.5 s | 每步时间间隔 |
+| 折扣因子 | $\gamma$ | 0.9 | 未来价值折扣 |
+
+### 5.2 自由能权重
+
+| 参数 | 符号 | 默认值 | 说明 |
+|------|------|--------|------|
+| 能量权重 | $w_E$ | 0.35 | 能量风险重要性 |
+| 时间权重 | $w_T$ | 0.35 | 时间风险重要性 |
+| 健康权重 | $w_h$ | 0.15 | 设备风险重要性 |
+| 进度权重 | $w_p$ | 0.15 | 进度偏离惩罚 |
+
+### 5.3 行动参数
+
+| 参数 | 符号 | 默认值 | 说明 |
+|------|------|--------|------|
+| 探索系数 | $\alpha$ | 0.1 | 认知价值权重 |
+| 逆温度 | $\beta$ | 5.0 | 选择确定性 |
+| 检查点开销 | $\kappa_{cp}$ | 0.1 | 相对时间开销 |
+| 功率降低率 | $\eta_{reduce}$ | 0.6 | 降低后的效率比 |
+
+### 5.4 噪声参数
+
+| 参数 | 符号 | 默认值 | 说明 |
+|------|------|--------|------|
+| 能量噪声 | $\sigma_E$ | 1000 J | 能量观测噪声 |
+| 健康噪声 | $\sigma_h$ | 0.02 | 健康度噪声 |
+| 过程噪声增长 | $\lambda_\sigma$ | 1.05 | 不确定性增长率 |
+
+---
+
+## 六、实现优先级建议
+
+### 第一阶段：核心功能（必须）
+
+```
+1. M17A: StateSpace        - 定义数据结构
+2. M17B: GenerativeModel   - 状态转移模型
+3. M17E: FreeEnergyCalculator (扩展) - 加入期望自由能
+4. M17F: ActionSelector (基础) - 贪婪选择
+```
+
+### 第二阶段：预测能力（重要）
+
+```
+5. M17C: TrajectoryPredictor - 确定性预测
+6. M17E: 加入认知价值项
+7. M17F: 加入Softmax选择
+```
+
+### 第三阶段：完整框架（进阶）
+
+```
+8. M17D: BeliefUpdater - 信念更新
+9. M17C: 加入不确定性传播
+10. M17G: PerceptionActionLoop - 完整循环
+```
+
+### 第四阶段：优化与扩展（可选）
+
+```
+11. M17F: 多步树搜索
+12. M17G: 自适应精度控制
+13. 在线学习模块
+```
+
+---
+
+## 七、验证测试用例设计
+
+### 7.1 单元测试
+
+| 测试 | 验证点 |
+|------|--------|
+| 状态转移正确性 | $f(s, a)$ 符合物理约束 |
+| 自由能单调性 | 资源减少 → F 增加 |
+| 期望自由能一致性 | $G(\pi) \geq \min_\tau F_\tau$ |
+| 行动选择合理性 | 高风险时倾向保守行动 |
+
+### 7.2 集成测试场景
+
+| 场景 | 期望行为 |
+|------|----------|
+| 能量充足、时间充裕 | 选择 continue |
+| 能量紧张、进度较高 | 选择 checkpoint 或 reduce_power |
+| 即将超时 | 选择 abort |
+| 高不确定性环境 | 倾向信息收集行动 |
+
+---
+
+参数是随便设置的，你可以设计一个符合系统场景的参数

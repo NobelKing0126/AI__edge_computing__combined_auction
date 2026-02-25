@@ -1,0 +1,343 @@
+# 竞争比（Competitive Ratio）计算与证明过程
+
+## 一、理论定义
+
+### 1.1 竞争比定义
+
+竞争比是衡量在线算法相对于离线最优算法性能的指标：
+
+$$\rho = \frac{SW^*}{SW_{online}}$$
+
+其中：
+- $SW^*$ = 离线最优社会福利（Oracle算法，知道所有未来任务）
+- $SW_{online}$ = 在线算法社会福利（不知道未来任务）
+
+**解释：**
+- $\rho = 1$：在线算法达到最优
+- $\rho > 1$：在线算法性能低于最优
+- $\rho < 1$：在线算法优于最优（通常不可能，但LP松弛可能过松）
+
+### 1.2 理论界
+
+基于原始-对偶框架，竞争比上界为：
+
+$$\rho \leq 1 + \frac{Gap}{SW_{online}}$$
+
+其中 $Gap = SW^* - SW_{online}$ 是对偶间隙。
+
+---
+
+## 二、离线最优问题建模
+
+### 2.1 问题形式化
+
+**目标函数：**
+$$\max \sum_{i \in \mathcal{U}} \sum_{l \in \mathcal{L}} \sum_{j \in \mathcal{N}} \eta_{i,l,j} \cdot x_{i,l,j}$$
+
+**约束条件：**
+
+1. **用户唯一性约束：**
+   $$\sum_{l,j} x_{i,l,j} = 1, \quad \forall i \in \mathcal{U}_{high}$$
+   $$\sum_{l,j} x_{i,l,j} \leq 1, \quad \forall i \in \mathcal{U}_{med} \cup \mathcal{U}_{low}$$
+
+2. **UAV算力约束：**
+   $$\sum_{i,l} f_{i,j}^{edge} \cdot x_{i,l,j} \leq f_j^{max}, \quad \forall j \in \mathcal{N}$$
+
+3. **UAV能量约束：**
+   $$\sum_{i,l} E_{i,l,j} \cdot x_{i,l,j} \leq E_j^{max}, \quad \forall j \in \mathcal{N}$$
+
+4. **云端算力约束：**
+   $$\sum_{i,l,j} f_{i}^{cloud} \cdot x_{i,l,j} \leq F_c$$
+
+5. **整数约束：**
+   $$x_{i,l,j} \in \{0, 1\}$$
+
+### 2.2 LP松弛
+
+将整数约束放松为：
+$$x_{i,l,j} \in [0, 1]$$
+
+LP松弛解是原问题最优值的上界：
+$$SW^*_{LP} \geq SW^*_{ILP}$$
+
+---
+
+## 三、实现方法
+
+### 3.1 离线最优求解器 (`OfflineOptimalSolver`)
+
+**方法1：LP松弛求解（默认）**
+
+```python
+def _solve_lp_relaxation(self, bids: List[BidInfo]) -> Tuple[float, Dict]:
+    """
+    使用LP松弛求解
+    
+    LP松弛将 x ∈ {0,1} 放松为 x ∈ [0,1]
+    得到的是最优社会福利的上界
+    """
+    # 1. 构建目标函数: max Σ η * x  => min -Σ η * x
+    c = np.array([-b.utility for b in bids])
+    
+    # 2. 构建约束矩阵
+    # - 用户唯一性约束（高优先级=1，其他≤1）
+    # - UAV算力约束
+    # - UAV能量约束
+    # - 云端算力约束
+    
+    # 3. 边界: 0 ≤ x ≤ 1
+    bounds = [(0, 1) for _ in range(n_vars)]
+    
+    # 4. 求解LP
+    result = linprog(c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
+                     bounds=bounds, method='highs')
+    
+    sw_optimal = -result.fun
+    return sw_optimal, allocation
+```
+
+**方法2：ILP精确求解（小规模）**
+
+```python
+def _solve_ilp(self, bids: List[BidInfo]) -> Tuple[float, Dict]:
+    """
+    使用ILP精确求解（小规模问题）
+    """
+    # 整数约束
+    integrality = np.ones(n_vars)
+    
+    result = milp(c, constraints=constraints, 
+                  bounds=bounds, integrality=integrality)
+    
+    sw_optimal = -result.fun
+    return sw_optimal, {'solution': result.x}
+```
+
+**方法3：贪心求解（备选）**
+
+```python
+def _solve_greedy(self, bids: List[BidInfo]) -> Tuple[float, Dict]:
+    """
+    贪心求解（作为备选方案）
+    按效用降序排序，贪心分配
+    """
+    sorted_bids = sorted(bids, key=lambda b: b.utility, reverse=True)
+    
+    # 贪心分配，检查资源约束
+    for bid in sorted_bids:
+        if 资源充足:
+            sw_total += bid.utility
+            allocation[...] = bid
+    
+    return sw_total, allocation
+```
+
+### 3.2 竞争比计算器 (`CompetitiveRatioCalculator`)
+
+```python
+def compute(self, bids: List[BidInfo], sw_online: float, 
+            sw_dual: float = None) -> Dict[str, float]:
+    """
+    计算竞争比
+    
+    Args:
+        bids: 所有投标列表
+        sw_online: 在线算法社会福利
+        sw_dual: 对偶问题最优值 (可选)
+    """
+    # Step 1: 求解离线最优
+    sw_optimal, _ = self.offline_solver.solve(bids, use_lp_relaxation=True)
+    
+    # Step 2: 计算实际竞争比
+    actual_ratio = sw_optimal / sw_online
+    
+    # Step 3: 计算对偶间隙
+    dual_gap = sw_optimal - sw_online
+    
+    # Step 4: 理论竞争比上界
+    theoretical_bound = 1 + dual_gap / sw_online
+    
+    # Step 5: 间隙百分比
+    gap_percentage = (sw_optimal - sw_online) / sw_optimal * 100
+    
+    return {
+        'sw_optimal': sw_optimal,
+        'sw_online': sw_online,
+        'actual_ratio': actual_ratio,
+        'dual_gap': dual_gap,
+        'theoretical_bound': theoretical_bound,
+        'gap_percentage': gap_percentage
+    }
+```
+
+---
+
+## 四、实验验证（实验16）
+
+### 4.1 实验设计
+
+```python
+def exp16_competitive_ratio(self):
+    """
+    实验16: 竞争比分析
+    """
+    user_counts = [20, 30, 40, 50]
+    n_repeats = 10
+    
+    for n_users in user_counts:
+        ratios = []
+        
+        for rep in range(n_repeats):
+            # 1. 生成任务
+            tasks = generator.generate_tasks(n_tasks=n_users)
+            
+            # 2. 运行在线算法（提议方法）
+            result = proposed.run(tasks, uav_resources, cloud_resources)
+            sw_online = result.social_welfare
+            
+            # 3. 构建所有可能的投标（用于离线最优）
+            bids = []
+            for task in tasks:
+                for uav_id in range(n_uavs):
+                    bids.append(BidInfo(
+                        user_id=i,
+                        utility=1.0,
+                        f_edge=task.compute_size * 0.5,
+                        f_cloud=task.compute_size * 0.5,
+                        ...
+                    ))
+            
+            # 4. 计算竞争比
+            cr_result = cr_calculator.compute(bids, sw_online)
+            ratios.append(cr_result['actual_ratio'])
+        
+        # 5. 统计分析
+        avg_ratio = np.mean(ratios)
+        std_ratio = np.std(ratios)
+```
+
+### 4.2 实验结果（已修正并集成）
+
+**原问题**：竞争比 < 1 是理论上不可能的，说明原实现有误。
+
+**修正方案**（已集成到 `run_extended_experiments.py`）：
+1. 使用统一的效用函数（离线和在线必须相同的任务权重）
+2. 使用简化的容量模型（每个UAV最多处理K个任务）
+3. 在线算法模拟真实场景（随机到达，决策不可撤销）
+
+**修正后结果**：
+
+| 用户数 | 竞争比 | 标准差 | Gap% | SW_Offline | SW_Online |
+|--------|--------|--------|------|------------|-----------|
+| 20 | 1.411 | 0.162 | 28.2% | 39.4 | 28.2 |
+| 30 | 1.395 | 0.112 | 27.8% | 65.3 | 47.2 |
+| 40 | 1.469 | 0.085 | 31.7% | 80.0 | 54.7 |
+| 50 | 1.432 | 0.090 | 29.9% | 103.7 | 72.7 |
+| 60 | 1.375 | 0.121 | 26.7% | 128.5 | 94.2 |
+
+**关键发现：**
+1. **竞争比 ≥ 1**：符合理论预期 ✓
+2. **ρ ≈ 1.4**：在线算法大约获得最优解的70-75%
+3. **Gap ≈ 27-32%**：对于贪心在线算法，这是典型的性能差距
+
+---
+
+## 五、证明过程总结
+
+### 5.1 理论证明框架
+
+**Step 1: 建立原始-对偶关系**
+
+- 原始问题（P）：最大化社会福利
+- 对偶问题（D）：最小化对偶目标
+- 弱对偶定理：$SW^* \leq D^*$
+
+**Step 2: 利用对偶间隙**
+
+$$Gap = SW^* - SW_{online} = D^* - SW_{online}$$
+
+**Step 3: 竞争比上界**
+
+$$\rho = \frac{SW^*}{SW_{online}} = 1 + \frac{Gap}{SW_{online}}$$
+
+**Step 4: 实际计算**
+
+1. 求解离线最优（LP松弛）：$SW^*_{LP}$
+2. 运行在线算法：$SW_{online}$
+3. 计算竞争比：$\rho = SW^*_{LP} / SW_{online}$
+
+### 5.2 实现要点
+
+1. **LP松弛提供上界**：$SW^*_{LP} \geq SW^*_{ILP}$
+2. **在线算法性能**：$SW_{online}$ 来自实际运行
+3. **竞争比计算**：$\rho = SW^* / SW_{online}$
+4. **统计验证**：多次重复实验，计算均值和方差
+
+---
+
+## 六、代码位置
+
+- **离线最优求解器**：`algorithms/offline_optimal.py`
+  - `OfflineOptimalSolver` 类
+  - `CompetitiveRatioCalculator` 类
+  
+- **实验实现**：`run_extended_experiments.py`
+  - `exp16_competitive_ratio()` 方法
+  
+- **实验结果**：`EXTENDED_EXPERIMENT_REPORT.md`
+  - 实验16结果表格
+
+---
+
+## 七、结论（已更新）
+
+1. **理论正确性**：修正后竞争比 ≥ 1，符合理论定义
+2. **实际性能**：实验显示竞争比在1.38-1.45范围（Priority权重）
+3. **关键修正**：
+   - 离线和在线必须使用相同的效用函数
+   - 使用ILP求解离线最优（非LP松弛）
+   - 在线算法需模拟真实场景（随机到达，不可撤销）
+4. **性能解读**：ρ ≈ 1.4 意味着在线算法获得约70%的最优性能
+
+该实现现在提供了正确的竞争比计算框架。
+
+---
+
+## 八、参考算法（CADEC）
+
+参考CADEC算法的竞争比证明过程：
+
+**CADEC算法的竞争比：**
+
+$$\kappa = 2\left(\frac{M_1^*}{N_1^*} + \frac{M_2^*}{N_2^*} + \frac{\Pi M_c}{N_c} - 1\right)$$
+
+其中：
+- $\frac{M_1^*}{N_1^*} = \max_{e_i \in I}\left\{\frac{M_1^i}{N_1^i}\right\}$ （所有ES上FLOPS价格相关参数的最大值）
+- $\frac{M_2^*}{N_2^*} = \max_{e_i \in I}\left\{\frac{M_2^i}{N_2^i}\right\}$ （所有ES上子信道价格相关参数的最大值）
+
+**关键步骤：**
+1. 利用原始-对偶框架建立最优解与在线解的联系
+2. 分析价格更新机制对对偶目标函数的影响
+3. 利用价格函数的单调性得到增量上界
+4. 结合个体理性约束关联支付与效用
+5. 考虑在线算法的固有损失（因子2）
+6. 得到理论上界$\kappa$
+
+**与本框架的对比：**
+- CADEC使用指数价格函数，本框架使用拉格朗日对偶变量作为影子价格
+- CADEC有严格的理论界$\kappa$，本框架通过LP松弛+实验验证
+- 两者都利用原始-对偶框架，但实现方式不同
+
+---
+
+## 九、未来改进方向
+
+1. **更紧的LP松弛**：使用更精确的LP松弛方法，减少上界
+2. **理论界推导**：基于本框架的价格机制推导严格的理论界
+3. **ILP精确求解**：对于小规模问题，使用ILP精确求解
+4. **在线算法分析**：分析在线算法的竞争比下界
+
+---
+
+*文档生成时间：2026-01-22*
+*最后更新：2026-01-22*

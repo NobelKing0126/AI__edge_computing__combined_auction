@@ -1,0 +1,2174 @@
+阶段0：系统初始化（完整整理）
+
+0.1 阶段目标
+1. 定义系统场景与基本假设
+2. 收集用户信息与DNN任务参数
+3. 计算全局统计量，为后续归一化提供基准
+4. 确定UAV数量并完成初始部署
+5. 进行初始资源分配与质量评估
+6. 输出系统初始状态，衔接后续阶段
+
+0.2 场景定义与假设
+应用场景
+UAV辅助边缘计算场景下的DNN协同推理。用户设备算力有限，需将DNN推理任务卸载到UAV边缘节点或云端执行。
+关键假设
+编号	假设	说明
+H1	UAV同构性	所有UAV具有相同最大算力$f^{max}$和电池容量$E^{max}$
+H2	固定飞行高度	UAV在固定高度$H$飞行，简化为二维部署问题
+H3	LoS信道	用户与UAV之间为视距信道，采用自由空间路径损耗模型
+H4	集中式初始化	阶段0由中央控制器完成，后续阶段分布式执行
+H5	位置可调整	UAV初始部署后，运行时可定期重定位
+时间预算
+阶段	时间约束
+系统初始化（阶段0）	$T_{init} \approx 5\text{-}30$秒（离线）
+投标生成（阶段2）	$T_{bid} \leq 200$ms
+拍卖决策（阶段3）	$T_{auction} \leq 100$ms
+端到端调度	$T_{total} < 1$秒
+
+0.3 输入数据
+用户集合与位置
+$\mathcal{U} = \{1, 2, \ldots, M\}$
+$pos_i = (x_i, y_i) \in \mathbb{R}^2, \quad \forall i \in \mathcal{U}$
+DNN任务参数
+$Task_i = (ModelID_i, InputSize_i, \mathcal{L}_i^{cut}, \tau_i^{max}, UserLevel_i)$
+参数	说明
+$ModelID_i$	DNN模型标识
+$InputSize_i$	输入数据大小（bits）
+$\mathcal{L}_i^{cut}$	可选切分点集合，修正后为$\{0, 1, ..., L\}$（所有层边界）
+$\tau_i^{max}$	最大容忍时延（seconds）
+$UserLevel_i$	用户等级（1-5）
+DNN模型结构信息（预存储）
+每个模型预先分析并存储层级信息：
+$LayerProfile_m = \{(FLOPs_l, OutputSize_l)\}_{l=1}^{L_m}$
+参数	说明
+$FLOPs_l$	第$l$层计算量（浮点运算次数）
+$OutputSize_l$	第$l$层输出特征图大小（bits）
+$L_m$	模型$m$的总层数
+系统参数
+参数	符号	典型值	说明
+UAV飞行高度	$H$	100m	固定
+UAV最大算力	$f^{max}$	10 GFLOPS	同构
+UAV电池容量	$E^{max}$	500kJ	同构
+信道带宽	$W$	20MHz	单信道
+参考信道增益	$\beta_0$	$10^{-6}$	1m处
+噪声功率谱密度	$N_0$	$10^{-17.4}$W/Hz	热噪声
+用户发射功率	$P_i^{tx}$	待确认，典型值0.1W	用户上行功率
+云端总算力	$F_c$	500 GFLOPS	云端资源池
+回程链路带宽	$R_{backhaul}$	100Mbps	UAV到云端
+边缘能耗系数	$\kappa_{edge}$	$10^{-28}$	边缘计算能耗
+云端能耗系数	$\kappa_{cloud}$	$10^{-29}$	云端计算能耗
+
+0.4 全局统计量计算
+任务计算量统计
+任务总计算量从DNN模型结构导出：
+$C_i^{total} = \sum_{l=1}^{L_{m_i}} FLOPs_l$
+统计量：
+$C_{min} = \min_{i \in \mathcal{U}} C_i^{total}, \quad C_{max} = \max_{i \in \mathcal{U}} C_i^{total}$
+输入大小统计
+$InputSize_{min} = \min_{i \in \mathcal{U}} InputSize_i, \quad InputSize_{max} = \max_{i \in \mathcal{U}} InputSize_i$
+时延统计
+$\tau_{min} = \min_{i \in \mathcal{U}} \tau_i^{max}, \quad \tau_{max} = \max_{i \in \mathcal{U}} \tau_i^{max}$
+用户等级统计
+$Level_{min} = \min_{i \in \mathcal{U}} UserLevel_i, \quad Level_{max} = \max_{i \in \mathcal{U}} UserLevel_i$
+用途：以上统计量传递给阶段1，用于优先级因子的归一化计算。
+
+0.5 场景几何特征
+用户分布边界
+$x_{min} = \min_i x_i, \quad x_{max} = \max_i x_i$
+$y_{min} = \min_i y_i, \quad y_{max} = \max_i y_i$
+场景中心与半径
+$Center = \left(\frac{x_{min} + x_{max}}{2}, \frac{y_{min} + y_{max}}{2}\right)$
+$R_{scene} = \frac{1}{2}\sqrt{(x_{max} - x_{min})^2 + (y_{max} - y_{min})^2}$
+用户质心
+$Centroid = \left(\frac{1}{M}\sum_{i=1}^{M} x_i, \frac{1}{M}\sum_{i=1}^{M} y_i\right)$
+场景面积与用户密度
+$A_{scene} = (x_{max} - x_{min}) \times (y_{max} - y_{min})$
+$\rho_{users} = \frac{M}{A_{scene}}$
+用途：
+● $Centroid$传递给阶段1，用于拍卖方选举的位置评分
+● $R_{scene}$用于阶段1候选拍卖方的位置筛选条件
+● $\bar{d}_{service}$传递给阶段4，用于UAV重定位触发判断
+
+0.6 UAV数量确定
+基于用户规模的确定规则
+$N = \begin{cases}
+2 & \text{if } M \leq 20 \\
+3 & \text{if } 20 < M \leq 50 \\
+5 & \text{if } 50 < M \leq 100 \\
+8 & \text{if } M > 100
+\end{cases}$
+UAV集合
+$\mathcal{N} = \{1, 2, \ldots, N\}$
+说明：此规则较为简化，未显式考虑总计算需求与UAV总算力的匹配，也未考虑覆盖约束。如需更精细的UAV数量确定，可结合算力需求比或覆盖面积约束进行扩展。
+
+0.7 加权K-means部署
+任务权重计算
+权重反映任务紧迫度，使UAV更靠近高优先级用户：
+$w_i = \alpha_1 \cdot \frac{C_i^{total} / \tau_i^{max}}{\max_k (C_k^{total} / \tau_k^{max})} + \alpha_2 \cdot \frac{InputSize_i}{\max_k InputSize_k}$
+推荐参数：$\alpha_1 = 0.7$，$\alpha_2 = 0.3$
+说明：此处权重侧重部署优化，与阶段1优先级计算的权重（侧重调度）设计目的不同。
+权重归一化
+$\tilde{w}_i = \frac{w_i}{\sum_{k \in \mathcal{U}} w_k}$
+加权K-means目标函数
+$\min_{P, \pi} \sum_{j=1}^{N} \sum_{i: \pi(i)=j} \tilde{w}_i \cdot \|pos_i - P_j\|^2$
+其中：
+● $P = \{P_1, \ldots, P_N\}$：UAV位置集合，$P_j = (x_j, y_j)$
+● $\pi: \mathcal{U} \to \mathcal{N}$：用户到UAV的分配映射
+迭代更新
+簇中心更新（加权质心）：
+$P_j = \frac{\sum_{i: \pi(i)=j} \tilde{w}_i \cdot pos_i}{\sum_{i: \pi(i)=j} \tilde{w}_i}$
+用户分配更新：
+$\pi(i) = \arg\min_{j \in \mathcal{N}} \|pos_i - P_j\|^2$
+K-means++初始化
+按距离平方概率选择初始中心，避免局部最优。
+收敛条件
+$\max_j \|P_j^{(t+1)} - P_j^{(t)}\| < \epsilon_{kmeans}$
+推荐：$\epsilon_{kmeans} = 10^{-6}$，最大迭代100次
+
+0.8 通信模型（供后续阶段使用）
+用户到UAV距离
+$d_{i,j} = \sqrt{(x_i - x_j)^2 + (y_i - y_j)^2 + H^2}$
+信道增益（自由空间路径损耗）
+$h_{i,j} = \frac{\beta_0}{d_{i,j}^2}$
+传输速率（香农公式）
+$R_{i,j} = W \log_2 \left(1 + \frac{P_i^{tx} \cdot h_{i,j}}{N_0 W}\right)$
+传输时延
+$T_i^{upload}(j) = \frac{InputSize_i}{R_{i,j}}$
+
+0.9 初始资源分配
+目的
+为后续阶段提供资源状态基准，评估部署质量。
+可行性判断
+UAV $j$对用户$i$可行当且仅当：
+$T_i^{upload}(j) < \tau_i^{max} \quad \text{且} \quad f_j^{avail} \geq f_i^{min}(j)$
+其中最小所需算力：
+$f_i^{min}(j) = \frac{C_i^{total}}{\tau_i^{max} - T_i^{upload}(j)}$
+贪心分配规则
+1. 按任务紧迫度$Urgency_i = C_i^{total} / \tau_i^{max}$降序排列
+2. 对每个任务选择最近可行UAV
+3. 分配算力并更新UAV剩余资源
+负载率计算
+$L_j = \frac{f_j^{used}}{f_j^{max}} = \frac{\sum_{i: \pi(i)=j} f_{i,j}}{f_j^{max}}$
+
+0.10 初始化质量评估
+任务覆盖率
+$CoverageRate = \frac{|\mathcal{U}_{assigned}|}{M}$
+平均UAV利用率
+$\bar{Util} = \frac{1}{N} \sum_{j=1}^{N} L_j$
+负载均衡指数（Jain's Fairness Index）
+$JFI = \frac{\left(\sum_{j=1}^{N} L_j\right)^2}{N \cdot \sum_{j=1}^{N} L_j^2}$
+取值$[1/N, 1]$，越接近1越均衡。
+平均服务距离
+$\bar{d}_{service} = \frac{1}{|\mathcal{U}_{assigned}|} \sum_{i \in \mathcal{U}_{assigned}} d_{i, \pi(i)}$
+用途：$\bar{d}_{service}$传递给阶段4，作为UAV重定位触发的基准。
+
+0.11 UAV状态初始化
+每个UAV的初始状态：
+$State_j = (P_j, f_j^{max}, f_j^{avail}, E_j^{remain}, L_j, LoadedModels_j)$
+参数	说明	初始值
+$P_j$	UAV位置$(x_j, y_j)$	K-means输出
+$f_j^{max}$	最大算力	系统参数
+$f_j^{avail}$	当前可用算力	$f_j^{max} - \sum_i f_{i,j}$
+$E_j^{remain}$	剩余能量	$E^{max}$（初始满电）
+$L_j$	负载率	贪心分配后计算
+$LoadedModels_j$	已加载模型集合	$\emptyset$（初始为空）
+
+0.12 阶段0输出接口
+传递给阶段1的数据
+数据项	符号	说明
+UAV集合	$\mathcal{N}$	UAV编号集合
+UAV位置	$\{P_j\}_{j=1}^N$	K-means优化后的位置
+UAV状态	$\{State_j\}_{j=1}^N$	含算力、能量、负载
+初始任务分配	$\pi^{(0)}$	用户-UAV映射
+用户质心	$Centroid$	用于拍卖方位置评分
+场景半径	$R_{scene}$	用于候选拍卖方筛选
+全局统计量	$C_{min}, C_{max}, \tau_{min}, \tau_{max}$	优先级归一化基准
+输入大小统计	$InputSize_{min}, InputSize_{max}$	优先级归一化基准
+用户等级统计	$Level_{min}, Level_{max}$	优先级归一化基准
+传递给阶段2的数据
+数据项	符号	说明
+DNN模型库	$\{LayerProfile_m\}$	各模型层结构信息
+UAV位置	$\{P_j\}$	距离与速率计算
+UAV状态	$\{f_j^{avail}, E_j^{remain}\}$	可行性判断
+系统参数	$H, W, \beta_0, N_0, R_{backhaul}$	通信与时延模型
+能耗系数	$\kappa_{edge}, \kappa_{cloud}$	能耗计算
+传递给阶段4的数据
+数据项	符号	说明
+平均服务距离	$\bar{d}_{service}$	UAV重定位触发基准
+UAV初始状态	$\{State_j\}$	运行时监控初始值
+DNN模型库	$\{LayerProfile_m\}$	Checkpoint数据量计算
+性能基线（用于系统评估）
+指标	符号	说明
+任务覆盖率	$CoverageRate$	初始可服务比例
+平均利用率	$\bar{Util}$	资源利用效率
+负载均衡指数	$JFI$	负载分布均匀性
+
+0.13 与后续阶段的衔接
+→ 阶段1（优先级与选举）
+● 全局统计量：$C_{min}, C_{max}, \tau_{min}, \tau_{max}, InputSize_{min}, InputSize_{max}, Level_{min}, Level_{max}$用于优先级因子归一化
+● 用户质心：$Centroid$用于计算UAV到用户中心的距离，参与拍卖方选举评分
+● 场景半径：$R_{scene}$用于候选拍卖方的位置筛选条件$Cond_j^d = (d_j^{center} \leq \beta_d \cdot R_{scene})$
+● UAV状态：$\{State_j\}$用于判断候选拍卖方的资源条件
+→ 阶段2（投标生成）
+● DNN模型库：$\{LayerProfile_m\}$用于解析DNN结构，确定可选切分点$\mathcal{L}_i^{cut} = \{0, 1, ..., L\}$
+● UAV位置：$\{P_j\}$用于计算用户到各UAV的距离与传输速率
+● UAV状态：$\{f_j^{avail}, E_j^{remain}\}$用于判断方案可行性与凸优化算力分配
+● 系统参数：用于通信模型与时延、能耗计算
+→ 阶段4（执行调度）
+● 平均服务距离：$\bar{d}_{service}$作为UAV重定位触发的基准
+● UAV初始状态：$\{State_j\}$作为运行时监控的初始状态
+● DNN模型库：用于Checkpoint数据量计算
+
+0.14 本阶段关键设计决策
+决策	选择	理由
+UAV数量确定	基于用户规模分档	简单有效，可扩展
+部署方法	加权K-means	使UAV靠近高优先级用户
+权重设计	紧迫度为主（$\alpha_1=0.7$）	灾后场景时延敏感
+初始分配	贪心算法	提供资源基准，非最终决策
+初始化方式	集中式	离线执行，可接受较高复杂度
+
+0.15 待确认细节
+项目	当前状态	说明
+用户发射功率$P_i^{tx}$	未明确	需确认是固定值还是可变范围，典型值0.1W
+加权K-means权重参数	$\alpha_1=0.7, \alpha_2=0.3$	可根据场景调整
+UAV数量分档阈值	20/50/100	可根据实际场景优化
+最大通信距离$d{max}$_	未显式约束	当前设计未强制覆盖保障
+
+0.16 阶段0流程图
+输入数据收集
+    ↓
+全局统计量计算 → 传递给阶段1（归一化基准）
+    ↓
+场景几何特征计算 → 传递给阶段1（位置评分）
+    ↓
+UAV数量确定
+    ↓
+加权K-means部署 → UAV位置$\{P_j\}$
+    ↓
+初始资源分配（贪心）
+    ↓
+质量评估 → 性能基线
+    ↓
+UAV状态初始化 → $\{State_j\}$
+    ↓
+输出接口 → 阶段1、阶段2、阶段4
+
+阶段1：任务优先级计算与拍卖方选举（完整整理）
+
+1.1 阶段目标
+1. 计算每个任务的综合优先级，用于后续效用计算和资源分配排序
+2. 将任务按优先级分类，便于差异化处理（高优先级必须服务，中低优先级可拒绝）
+3. 通过分布式投票机制选举拍卖方UAV，负责后续阶段的集中决策
+4. 确定备选拍卖方，提高系统鲁棒性
+
+1.2 输入数据（来自阶段0）
+数据项	符号	用途
+用户集合	$\mathcal{U}$	遍历计算优先级
+任务参数	$\{Task_i\}$	优先级因子计算
+全局统计量	$C_{min}, C_{max}, \tau_{min}, \tau_{max}$	计算量、时延归一化
+输入大小统计	$InputSize_{min}, InputSize_{max}$	数据量归一化
+用户等级统计	$Level_{min}, Level_{max}$	等级归一化
+UAV集合	$\mathcal{N}$	拍卖方候选
+UAV状态	$\{State_j\}$	候选筛选与评分
+UAV位置	$\{P_j\}$	位置评分计算
+用户质心	$Centroid$	UAV到中心距离（备用）
+场景半径	$R_{scene}$	距离阈值设定（备用）
+
+1.3 任务优先级计算
+1.3.1 优先级因子定义
+任务优先级综合考虑四个维度：
+数据量因子（输入大小）：
+$\omega_i^{data} = \begin{cases}
+\dfrac{InputSize_i - InputSize_{min}}{InputSize_{max} - InputSize_{min}} & \text{if } InputSize_{max} \neq InputSize_{min} \\[10pt]
+0 & \text{otherwise}
+\end{cases}$
+计算量因子：
+$\omega_i^{comp} = \begin{cases}
+\dfrac{C_i^{total} - C_{min}}{C_{max} - C_{min}} & \text{if } C_{max} \neq C_{min} \\[10pt]
+0 & \text{otherwise}
+\end{cases}$
+时延紧迫度因子：
+$\omega_i^{delay} = \begin{cases}
+\dfrac{\tau_{max} - \tau_i^{max}}{\tau_{max} - \tau_{min}} & \text{if } \tau_{max} \neq \tau_{min} \\[10pt]
+0 & \text{otherwise}
+\end{cases}$
+设计逻辑：$\tau_i^{max}$越小表示任务越紧急，因此用$\tau_{max} - \tau_i^{max}$使紧急任务获得更高因子值。
+用户等级因子：
+$\omega_i^{level} = \begin{cases}
+\dfrac{UserLevel_i - Level_{min}}{Level_{max} - Level_{min}} & \text{if } Level_{max} \neq Level_{min} \\[10pt]
+0 & \text{otherwise}
+\end{cases}$
+1.3.2 综合优先级公式
+$\omega_i = \alpha_1 \cdot \omega_i^{data} + \alpha_2 \cdot \omega_i^{comp} + \alpha_3 \cdot \omega_i^{delay} + \alpha_4 \cdot \omega_i^{level}$
+权重设置：
+权重	值	设计理由
+$\alpha_1$	0.15	数据量影响传输时延
+$\alpha_2$	0.25	计算量影响资源需求
+$\alpha_3$	0.40	时延紧迫度最关键（灾后场景）
+$\alpha_4$	0.20	用户等级反映任务重要性
+约束：$\sum_{k=1}^{4} \alpha_k = 1$
+优先级范围：$\omega_i \in [0, 1]$
+1.3.3 边界情况处理
+当所有因子均无区分度时（所有任务参数相同），按任务索引分配优先级：
+$\omega_i = \frac{M - i + 1}{M}, \quad \text{if } \forall k: \omega_k^{factor} = 0$
+
+1.4 任务分类
+1.4.1 自适应分位数阈值
+基于当前任务集的优先级分布动态确定阈值：
+$\theta_{high} = P_{80}(\{\omega_i\}_{i \in \mathcal{U}})$
+$\theta_{medium} = P_{40}(\{\omega_i\}_{i \in \mathcal{U}})$
+其中$P_k(\cdot)$表示第$k$百分位数。
+阈值含义：
+阈值	分位数	任务比例
+$\theta_{high}$	80%	前20%为高优先级
+$\theta_{medium}$	40%	中间40%为中优先级
+-	-	后40%为低优先级
+1.4.2 分类规则
+$\mathcal{U}_{high} = \{i \in \mathcal{U} : \omega_i \geq \theta_{high}\}$
+$\mathcal{U}_{medium} = \{i \in \mathcal{U} : \theta_{medium} \leq \omega_i < \theta_{high}\}$
+$\mathcal{U}_{low} = \{i \in \mathcal{U} : \omega_i < \theta_{medium}\}$
+完备性验证：
+$\mathcal{U}_{high} \cup \mathcal{U}_{medium} \cup \mathcal{U}_{low} = \mathcal{U}$
+$\mathcal{U}_{high} \cap \mathcal{U}_{medium} = \mathcal{U}_{medium} \cap \mathcal{U}_{low} = \mathcal{U}_{high} \cap \mathcal{U}_{low} = \emptyset$
+1.4.3 分类统计
+$M_{high} = |\mathcal{U}_{high}|, \quad M_{medium} = |\mathcal{U}_{medium}|, \quad M_{low} = |\mathcal{U}_{low}|$
+$r_{high} = \frac{M_{high}}{M}, \quad r_{medium} = \frac{M_{medium}}{M}, \quad r_{low} = \frac{M_{low}}{M}$
+1.4.4 分类与阶段3约束的衔接
+任务分类直接影响阶段3的约束设置：
+任务类别	阶段3约束	含义
+$\mathcal{U}_{high}$	$\sum_{l,j} x_{i,l,j} = 1$	必须被服务
+$\mathcal{U}_{medium} \cup \mathcal{U}_{low}$	$\sum_{l,j} x_{i,l,j} \leq 1$	可被拒绝
+
+1.5 分布式拍卖方选举【修正】
+1.5.1 选举机制概述
+原设计中"系统选举"定义模糊，修正为用户投票的分布式选举机制。
+核心思想：每个用户根据接收到的UAV状态信息独立评分并投票，通过汇总投票确定拍卖方。
+1.5.2 Step 1：UAV状态广播
+每个UAV广播自身状态：
+$Broadcast_j = (j, P_j, f_j^{avail}, E_j^{remain}, L_j, LoadedModels_j)$
+字段	说明
+$j$	UAV编号
+$P_j$	UAV位置
+$f_j^{avail}$	可用算力
+$E_j^{remain}$	剩余能量
+$L_j$	当前负载率
+$LoadedModels_j$	已加载模型集合
+广播时延：$T_{broadcast} \approx 0.1$秒
+1.5.3 Step 2：用户计算UAV评分
+每个用户$i$收到所有可达UAV的广播后，独立计算评分：
+$S_j^{(i)} = w_1 \cdot \frac{E_j^{remain}}{E^{max}} + w_2 \cdot \frac{f_j^{avail}}{f^{max}} + w_3 \cdot S_j^{position}(i) + w_4 \cdot (1 - L_j)$
+位置评分（相对于用户$i$）：
+$S_j^{position}(i) = 1 - \frac{d_{i,j}}{\max_{k \in \mathcal{N}} d_{i,k}}$
+其中$d_{i,j} = \sqrt{(x_i - x_j)^2 + (y_i - y_j)^2 + H^2}$
+权重设置：
+权重	值	说明
+$w_1$	0.25	能量保障续航
+$w_2$	0.30	算力可用性（拍卖方需处理协调计算）
+$w_3$	0.25	位置（用户视角）
+$w_4$	0.20	负载均衡
+约束：$\sum_{k=1}^{4} w_k = 1$
+评分范围：$S_j^{(i)} \in [0, 1]$
+计算时延：$T_{compute} \approx 0.05$秒
+1.5.4 Step 3：用户投票
+每个用户选择评分最高的UAV作为其投票：
+$Vote_i = \arg\max_{j \in \mathcal{N}} S_j^{(i)}$
+平局处理：若存在多个最高分UAV，选择编号最小者。
+投票时延：$T_{vote} \approx 0.1$秒
+1.5.5 Step 4：投票汇总
+方式A：用户广播投票，所有节点统计
+方式B：用户将投票发送给所有UAV，每个UAV统计
+每个UAV的得票数：
+$Votes_j = |\{i \in \mathcal{U} : Vote_i = j\}|$
+汇总时延：$T_{count} \approx 0.05$秒
+1.5.6 Step 5：确定拍卖方与备选
+主拍卖方：
+$j_{auc}^{primary} = \arg\max_{j \in \mathcal{N}} Votes_j$
+备选拍卖方：
+$j_{auc}^{backup} = \arg\max_{j \in \mathcal{N} \setminus \{j_{auc}^{primary}\}} Votes_j$
+平局处理：
+若存在多个最高票候选：
+1. 选择能量更高者：$j_{auc} = \arg\max_{j \in Ties} E_j^{remain}$
+2. 若仍平局，选择编号最小者（确定性规则）
+备选拍卖方数量可根据系统规模调整，大规模场景可选举多个备选
+1.5.7 Step 6：结果确认与广播
+当选拍卖方广播确认消息：
+$Confirm_{auc} = (j_{auc}^{primary}, j_{auc}^{backup}, t_{start}, T_{auction})$
+字段	说明
+$j_{auc}^{primary}$	主拍卖方ID
+$j_{auc}^{backup}$	备选拍卖方ID
+$t_{start}$	拍卖开始时间
+$T_{auction}$	拍卖持续时间
+确认时延：$T_{confirm} \approx 0.1$秒
+1.5.8 选举流程时序
+Step 1: 各UAV广播状态           (T_broadcast ≈ 0.1s)
+           ↓
+Step 2: 用户计算评分             (T_compute ≈ 0.05s)
+           ↓
+Step 3: 用户广播投票             (T_vote ≈ 0.1s)
+           ↓
+Step 4: 所有节点统计投票         (T_count ≈ 0.05s)
+           ↓
+Step 5: 确定主拍卖方与备选       
+           ↓
+Step 6: 拍卖方广播确认           (T_confirm ≈ 0.1s)
+           ↓
+        选举完成，进入阶段2
+总选举时延：$T_{election} \approx 0.4$秒
+
+1.6 拍卖方资源预留
+1.6.1 预留目的
+拍卖方需预留部分资源用于协调工作（接收投标、执行拍卖算法、广播结果）。
+1.6.2 预留量
+$f_{j_{auc}}^{reserved} = \gamma_f \cdot f_{j_{auc}}^{max}$
+$E_{j_{auc}}^{reserved} = \gamma_E \cdot E_{j_{auc}}^{max}$
+推荐：$\gamma_f = 0.05$（5%算力），$\gamma_E = 0.02$（2%能量）
+1.6.3 可用资源更新
+$f_{j_{auc}}^{available} = f_{j_{auc}}^{avail} - f_{j_{auc}}^{reserved}$
+$E_{j_{auc}}^{available} = E_{j_{auc}}^{remain} - E_{j_{auc}}^{reserved}$
+1.6.4 有效性验证
+$Valid_{auc} = \left(f_{j_{auc}}^{available} \geq 0.1 \cdot f^{max}\right) \land \left(E_{j_{auc}}^{available} \geq 0.1 \cdot E^{max}\right)$
+若验证失败，主拍卖方让位给备选拍卖方。
+
+1.7 通信建立
+1.7.1 连接状态
+$Connected_j = \begin{cases}
+DIRECT & \text{if } d_{j, j_{auc}} \leq d_{comm}^{max} \\
+RELAY & \text{if 存在中继路径} \\
+DISCONNECTED & \text{otherwise}
+\end{cases}$
+$d_{comm}^{max}$为UAV间最大通信距离，典型值5-10km
+1.7.2 全局连接完整性
+$AllConnected = \bigwedge_{j \in \mathcal{N} \setminus \{j_{auc}\}} (Connected_j \neq DISCONNECTED)$
+若存在不可达UAV，需建立多跳中继路径或调整拍卖方。
+
+1.8 用户投票选举的优势与问题应对
+1.8.1 优势
+优势	说明
+去中心化	无需地面控制站或云端参与
+用户视角	位置评分考虑用户分布
+民主机制	反映多数用户偏好
+灾后适用	自组织，无外部依赖
+1.8.2 潜在问题与应对
+问题	应对措施
+用户恶意投票	用户关心服务质量而非谁当拍卖方，恶意动机有限
+通信开销	投票信息很小（仅UAV编号），$M$个用户约$M \times 4$字节
+部分用户未投票	设置超时$T_{vote,timeout}$，未投票视为弃权
+网络分区	各分区独立选举，后续通过备选拍卖方协调
+
+1.9 优先级、自由能、价格的关系说明
+本阶段计算的**优先级$\omega_i$**与后续阶段概念的区分：
+概念	定义阶段	本质	作用
+优先级$\omega_i$	阶段1	任务静态重要性	效用加权基础
+自由能$\tilde{F}$	阶段2	方案执行风险	风险惩罚与Checkpoint决策
+价格$\lambda, \nu, \mu, \phi, \xi$	阶段3-4	资源稀缺程度	供需平衡与任务分流
+三者在阶段3效用计算中协同作用：
+$\eta_{i,l,j}^{final} = \underbrace{\omega_i}_{\text{优先级}} \cdot \underbrace{\eta^{stage2}}_{\text{基础效用}} \cdot \underbrace{\exp\left(-\frac{\tilde{F}}{\tilde{F}_{threshold}}\right)}_{\text{自由能指数衰减}}$
+调整后效用（对偶分解）：
+$\tilde{\eta}_{i,l,j} = \eta_{i,l,j}^{final} - \underbrace{\lambda_j f_{i,j}^* - \nu_j E_{i,l,j} - \phi_j \kappa(f_{i,j}^*)^3 - \mu_s - \xi f_{c,i}^* - \psi_{j,m}}_{\text{资源价格扣减}}$
+
+1.10 阶段1输出接口
+传递给阶段2的数据
+数据项	符号	说明
+任务优先级	$\{\omega_i\}_{i \in \mathcal{U}}$	每个任务的综合优先级
+任务分类	$(\mathcal{U}_{high}, \mathcal{U}_{medium}, \mathcal{U}_{low})$	三个优先级集合
+分类统计	$(M_{high}, M_{medium}, M_{low})$	各类任务数量
+主拍卖方	$j_{auc}^{primary}$	投标接收者
+备选拍卖方	$j_{auc}^{backup}$	故障时接管
+拍卖方可用资源	$(f_{j_{auc}}^{available}, E_{j_{auc}}^{available})$	扣除预留后
+通信状态	$\{Connected_j\}_{j \in \mathcal{N}}$	各UAV连接状态
+传递给阶段3的数据
+数据项	符号	说明
+任务优先级	$\{\omega_i\}$	用于最终效用计算
+任务分类	$(\mathcal{U}_{high}, \mathcal{U}_{medium}, \mathcal{U}_{low})$	用于差异化约束
+传递给阶段4的数据
+数据项	符号	说明
+任务优先级	$\{\omega_i\}$	用于运行时动态优先级计算
+备选拍卖方	$j_{auc}^{backup}$	主拍卖方故障时接管
+
+1.11 与前后阶段的衔接
+← 来自阶段0
+数据项	用途
+全局统计量	优先级因子归一化
+UAV状态$\{State_j\}$	拍卖方候选评分
+用户质心$Centroid$	备用：原设计用于位置评分，修正后改为用户视角
+场景半径$R_{scene}$	备用：原设计用于候选筛选
+→ 传递给阶段2
+数据项	阶段2用途
+优先级$\omega_i$	暂存，传递给阶段3
+拍卖方$j_{auc}^{primary}$	投标发送目标
+通信状态$\{Connected_j\}$	决定投标传输路径（直接/多跳）
+→ 传递给阶段3
+数据项	阶段3用途
+优先级$\omega_i$	与阶段2效用相乘得最终效用
+任务分类	高优先级约束$=1$，中低优先级约束$\leq 1$
+公式衔接：
+$\eta_{i,l,j}^{final} = \omega_i \cdot \eta_{i,l,j}^{stage2} \cdot \exp\left(-\frac{\tilde{F}(l,j)}{\tilde{F}_{threshold}}\right)$
+→ 传递给阶段4
+数据项	阶段4用途
+优先级$\omega_i$	运行时动态优先级计算
+备选拍卖方$j_{auc}^{backup}$	主拍卖方故障时接管
+公式衔接：
+$Priority_i^{runtime}(t) = w_1 \cdot \omega_i + w_2 \cdot \frac{\tau_i^{max} - t_{elapsed}}{\tau_i^{max}} + w_3 \cdot (1 - \gamma_{i,l,j})$
+
+1.12 本阶段关键设计决策
+决策	选择	理由
+优先级因子数量	4个	覆盖数据、计算、时延、用户等级
+权重分配	时延最高(0.40)	灾后场景时延敏感
+分类方法	自适应分位数	避免固定阈值在极端分布下失效
+选举机制	用户分布式投票	去中心化，适合灾后场景
+拍卖方评分	用户视角的综合评分	反映用户偏好
+备选机制	选举备选拍卖方	提高系统鲁棒性
+资源预留	5%算力+2%能量	保障协调工作
+
+1.13 待确认细节
+项目	当前状态	说明
+优先级权重$(\alpha_1, \alpha_2, \alpha_3, \alpha_4)$	0.15/0.25/0.40/0.20	可根据场景调整
+拍卖方评分权重$(w_1, w_2, w_3, w_4)$	0.25/0.30/0.25/0.20	可根据场景调整
+资源预留比例$(\gamma_f, \gamma_E)$	0.05/0.02	可根据拍卖复杂度调整
+备选拍卖方数量	1个	大规模场景可增加
+投票超时$T{vote,timeout}$_	未明确	建议0.2-0.5秒
+UAV间最大通信距离$d{comm}^{max}$_	未明确	典型值5-10km
+
+1.14 阶段1流程图
+来自阶段0：全局统计量、UAV状态
+              ↓
+┌─────────────────────────────────────┐
+│         任务优先级计算               │
+│  ω_i = Σα_k · ω_i^{factor_k}        │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│           任务分类                   │
+│  U_high, U_medium, U_low            │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│       分布式拍卖方选举               │
+│  Step 1: UAV广播状态                │
+│  Step 2: 用户计算评分S_j^(i)        │
+│  Step 3: 用户投票Vote_i             │
+│  Step 4: 汇总投票Votes_j            │
+│  Step 5: 确定主/备拍卖方            │
+│  Step 6: 广播确认                   │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│        拍卖方资源预留                │
+│  f_available, E_available           │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│          通信建立                    │
+│  检查UAV间连通性                    │
+└─────────────────────────────────────┘
+              ↓
+输出：ω_i, 任务分类, j_auc, 通信状态
+              ↓
+         进入阶段2
+
+1.15 计算复杂度分析
+环节	复杂度	说明
+优先级计算	$O(M)$	遍历所有用户
+分位数计算	$O(M \log M)$	排序
+任务分类	$O(M)$	遍历比较阈值
+用户评分计算	$O(M \cdot N)$	每用户评估每UAV
+投票汇总	$O(M)$	统计票数
+总复杂度	$O(M \cdot N + M \log M)$	主要受评分计算主导
+时间预算：$T_{phase1} \approx T_{priority} + T_{election} \approx 0.1 + 0.4 = 0.5$秒
+
+阶段2：基于主动推理的DNN感知投标生成（完整整理）
+
+2.1 阶段目标
+1. 解析DNN模型结构，确定所有可选切分点
+2. 对每个切分点与UAV组合，通过凸优化求解最优算力分配
+3. 计算时延、能耗、自由能，评估方案执行风险
+4. 基于理论阈值进行Checkpoint决策
+5. 生成Top-K候选投标，通过直接或多跳路由传输给拍卖方
+6. 完成资源信息更新T1
+核心创新：
+● 凸优化闭型解实现边云联合算力分配
+● 自由能量化不同切分方案的执行不确定性
+● 理论阈值驱动的Checkpoint决策
+
+2.2 输入数据
+来自阶段0
+数据项	符号	用途
+UAV位置	$\{P_j\}$	距离与速率计算
+UAV状态	$\{f_j^{avail}, E_j^{remain}\}$	可行性判断与凸优化
+DNN模型库	$\{LayerProfile_m\}$	切分点分析
+系统参数	$H, W, \beta_0, N_0, P_i^{tx}, R_{backhaul}$	通信模型
+能耗系数	$\kappa_{edge}, \kappa_{cloud}$	能耗计算
+来自阶段1
+数据项	符号	用途
+任务优先级	$\{\omega_i\}$	传递给阶段3
+任务分类	$\mathcal{U}_{high}, \mathcal{U}_{medium}, \mathcal{U}_{low}$	传递给阶段3
+主拍卖方	$j_{auc}^{primary}$	投标接收者
+备选拍卖方	$j_{auc}^{backup}$	主拍卖方故障时备用
+通信状态	$\{Connected_j\}$	投标传输路径
+来自阶段4（非首轮，闭环反馈）
+数据项	符号	用途
+价格反馈	$\{P_j^{comp}, P_j^{energy}, P_s^{channel}\}$	引导UAV选择
+利用率	$\{Util_j\}$	负载感知
+模型加载状态	$\{LoadedModels_j\}$	模型热度
+
+2.3 DNN模型解析
+2.3.1 层级结构提取
+对用户$i$的模型$m_i$，从模型库读取：
+$LayerProfile_{m_i} = \{(FLOPs_l, OutputSize_l)\}_{l=1}^{L}$
+参数	说明
+$FLOPs_l$	第$l$层计算量（浮点运算次数）
+$OutputSize_l$	第$l$层输出特征图大小（bits）
+$L$	模型总层数
+2.3.2 可选切分点集合【修正】
+所有层边界均可作为切分点：
+$\mathcal{L}_i^{cut} = \{0, 1, 2, ..., L\}$
+共$L+1$个切分点。
+2.3.3 切分点参数计算
+对每个切分点$l \in \mathcal{L}_i^{cut}$：
+边缘计算量（前$l$层）：
+$C_i^{edge}(l) = \sum_{k=1}^{l} FLOPs_k$
+云端计算量（后$L-l$层）：
+$C_i^{cloud}(l) = \sum_{k=l+1}^{L} FLOPs_k$
+传输数据量（第$l$层输出）：
+$D_i^{trans}(l) = OutputSize_l$
+特殊切分点：
+切分点	含义	参数值
+$l = 0$	全云端	$C_i^{edge}(0) = 0$，$D_i^{trans}(0) = InputSize_i$
+$l = L$	全边缘	$C_i^{cloud}(L) = 0$，$D_i^{trans}(L) = 0$
+2.3.4 Checkpoint层约束
+虽然所有层可切分，但Checkpoint仍建议在特定层执行：
+$\mathcal{L}_i^{cp} \subseteq \mathcal{L}_i^{cut}$
+适合Checkpoint的层：卷积层后、池化层后、批归一化后
+不适合Checkpoint的层：残差块内部、注意力机制中间
+Checkpoint层选择：
+$l_{cp,i} = \max\{l' : l' \in \mathcal{L}_i^{cp}, l' \leq l_i^*\}$
+即选择不超过切分层的最大可Checkpoint层。
+
+2.4 通信模型
+2.4.1 用户到UAV链路
+三维距离：
+$d_{i,j} = \sqrt{(x_i - x_j)^2 + (y_i - y_j)^2 + H^2}$
+信道增益（自由空间路径损耗）：
+$h_{i,j} = \frac{\beta_0}{d_{i,j}^2}$
+传输速率（香农公式）：
+$R_{i,j} = W \log_2 \left(1 + \frac{P_i^{tx} \cdot h_{i,j}}{N_0 W}\right)$
+2.4.2 UAV到云端链路
+回程链路速率（固定）：
+$R_{j,cloud} = R_{backhaul}$
+典型值：$R_{backhaul} = 100$ Mbps
+
+2.5 时延模型【修正：串行 + 返回时延】
+2.5.1 完整时延公式
+$T_i^{total}(l, j) = T_i^{upload} + T_i^{edge}(l, j) + T_i^{trans}(l) + T_i^{cloud}(l) + T_i^{return}(l)$
+各分量严格顺序执行：
+分量	公式	说明
+上传时延	$T_i^{upload} = \dfrac{InputSize_i}{R_{i,j}}$	用户→UAV
+边缘计算时延	$T_i^{edge}(l, j) = \dfrac{C_i^{edge}(l)}{f_{i,j}^*}$	UAV执行1~$l$层
+中继传输时延	$T_i^{trans}(l) = \dfrac{D_i^{trans}(l)}{R_{backhaul}}$	UAV→云端
+云端计算时延	$T_i^{cloud}(l) = \dfrac{C_i^{cloud}(l)}{f_{c,i}^*}$	云端执行$l+1$~$L$层
+返回时延	$T_i^{return}(l)$	云端→UAV→用户
+2.5.2 返回时延定义
+$T_i^{return}(l) = \mathbb{1}(l < L) \cdot \frac{OutputSize_L}{R_{backhaul}} + \frac{OutputSize_L}{R_{i,j}}$
+模式	返回时延
+全边缘（$l=L$）	$\frac{OutputSize_L}{R_{i,j}}$（仅UAV→用户）
+协作/全云端（$l<L$）	$\frac{OutputSize_L}{R_{backhaul}} + \frac{OutputSize_L}{R_{i,j}}$（云→UAV→用户）
+2.5.3 三种卸载模式统一表达
+模式	切分层	时延公式
+全边缘	$l = L$	$T = T^{upload} + T^{edge}(L) + T^{return}(L)$
+协作	$0 < l < L$	$T = T^{upload} + T^{edge}(l) + T^{trans}(l) + T^{cloud}(l) + T^{return}(l)$
+全云端	$l = 0$	$T = T^{upload} + T^{trans}(0) + T^{cloud}(0) + T^{return}(0)$
+2.5.4 串行时延的物理依据
+DNN推理的数据依赖性：
+$Output_l = Layer_l(Output_{l-1})$
+云端执行第$l+1$层需要第$l$层的完整输出，因此：
+1. 边缘必须先完成第$l$层计算
+2. 第$l$层输出必须完整传输到云端
+3. 云端才能开始第$l+1$层计算
+
+2.6 凸优化算力分配【新增】
+2.6.1 优化问题定义
+给定切分层$l$和目标UAV $j$，求解最优算力分配：
+$\min_{f_{i,j}, f_{c,i}} \quad T_i^{compute}(l) = \frac{C_i^{edge}(l)}{f_{i,j}} + \frac{C_i^{cloud}(l)}{f_{c,i}}$
+约束条件：
+C1（时延约束）：
+$T_i^{total}(l, j) \leq \tau_i^{max}$
+等价于：
+$\frac{C_i^{edge}(l)}{f_{i,j}} + \frac{C_i^{cloud}(l)}{f_{c,i}} \leq T_i^{budget}$
+其中：
+$T_i^{budget} = \tau_i^{max} - T_i^{upload} - T_i^{trans}(l) - T_i^{return}(l)$
+C2（能量约束）：
+$\kappa_{edge} \cdot f_{i,j}^2 \cdot C_i^{edge}(l) + \kappa_{cloud} \cdot f_{c,i}^2 \cdot C_i^{cloud}(l) \leq E_i^{budget}$
+其中：
+$E_i^{budget} = \min\left(\frac{E_j^{remain}}{|\mathcal{Q}_j| + 1}, 0.3 \cdot E^{max}\right) - E_i^{comm}$
+C3（算力上界）：
+$f_{i,j} \leq f_j^{avail}, \quad f_{c,i} \leq f_c^{max}$
+C4（非负性）：
+$f_{i,j} \geq 0, \quad f_{c,i} \geq 0$
+2.6.2 问题凸性分析
+● 目标函数：$\frac{C^{edge}}{f_{edge}} + \frac{C^{cloud}}{f_{cloud}}$关于$(f_{edge}, f_{cloud})$联合凸
+● 约束集：均为凸集
+● 结论：凸优化问题，KKT条件是充要条件
+2.6.3 四组闭型解（覆盖所有KKT点）
+根据时延约束和能量约束的激活状态，分四种情况：
+Case 1：两约束均不激活
+取算力上界：
+$f_{i,j}^* = f_j^{avail}, \quad f_{c,i}^* = f_c^{max}$
+Case 2：仅时延约束激活
+时延等式求解，按计算量比例分配时间预算：
+$f_{i,j}^* = \frac{C_i^{edge}(l)}{T_i^{budget}} \cdot \frac{C_i^{edge}(l) + C_i^{cloud}(l)}{C_i^{edge}(l)}$
+$f_{c,i}^* = \frac{C_i^{cloud}(l)}{T_i^{budget}} \cdot \frac{C_i^{edge}(l) + C_i^{cloud}(l)}{C_i^{cloud}(l)}$
+简化形式：
+$f_{i,j}^* = \frac{C_i^{edge}(l)}{T_i^{budget} \cdot r}, \quad f_{c,i}^* = \frac{C_i^{cloud}(l)}{T_i^{budget} \cdot (1-r)}$
+其中$r$为边缘时间占比，通过最小化总时延确定。
+Case 3：仅能量约束激活
+拉格朗日乘子法求解，最优条件为边际能效相等：
+$\frac{\partial E_{edge}}{\partial f_{i,j}} = \frac{\partial E_{cloud}}{\partial f_{c,i}}$
+得：
+$2\kappa_{edge} f_{i,j} C_i^{edge} = 2\kappa_{cloud} f_{c,i} C_i^{cloud}$
+结合能量等式约束求解$f_{i,j}^*, f_{c,i}^*$。
+Case 4：两约束均激活
+联立时延等式和能量等式：
+$\frac{C_i^{edge}}{f_{i,j}} + \frac{C_i^{cloud}}{f_{c,i}} = T_i^{budget}$
+$\kappa_{edge} f_{i,j}^2 C_i^{edge} + \kappa_{cloud} f_{c,i}^2 C_i^{cloud} = E_i^{budget}$
+求解二元方程组得$f_{i,j}^*, f_{c,i}^*$。
+2.6.4 最优解选择
+Step 1：计算四组候选解
+Step 2：可行性检查（满足所有约束）
+Step 3：选择可行且时延最小者
+$(f_{i,j}^*, f_{c,i}^*) = \arg\min_{\text{可行解}} T_i^{total}(l, j)$
+2.6.5 最优性命题
+命题：给定切分层$l$和目标UAV $j$，四组候选解覆盖所有KKT点，选择其中可行且时延最小者即为全局最优解。
+证明要点：
+1. 问题是凸优化（目标凸，约束凸）
+2. KKT条件是充要条件
+3. 四种情况对应约束激活的所有组合$2^2=4$
+4. 穷尽所有KKT点类型
+
+2.7 能耗模型【修正】
+2.7.1 边缘计算能耗
+$E_i^{edge}(l, j) = \kappa_{edge} \cdot (f_{i,j}^*)^2 \cdot C_i^{edge}(l)$
+2.7.2 云端计算能耗
+$E_i^{cloud}(l) = \kappa_{cloud} \cdot (f_{c,i}^*)^2 \cdot C_i^{cloud}(l)$
+注：云端能耗对UAV能量无直接影响，但计入系统总能耗分析
+2.7.3 通信能耗
+$E_i^{comm}(l, j) = P^{rx} \cdot T_i^{upload} + P^{tx} \cdot T_i^{trans}(l)$
+典型值：$P^{rx} = 0.1$W，$P^{tx} = 0.5$W
+2.7.4 Checkpoint能耗
+$E_i^{checkpoint}(l_{cp}) = P^{write} \cdot T_i^{checkpoint}(l_{cp})$
+典型值：$P^{write} = 7$W
+2.7.5 总能耗
+$E_i^{total}(l, j) = E_i^{edge}(l, j) + E_i^{comm}(l, j) + x_{cp} \cdot E_i^{checkpoint}$
+
+2.8 主动推理框架
+2.8.1 核心思想
+主动推理通过最小化自由能使智能体维持稳态。自由能量化预测与实际的偏差——自由能越低，预测越准确，方案越稳定。
+2.8.2 状态空间定义
+DNN感知的系统状态：
+$S_t = \begin{bmatrix} S_{model} \\ S_{layer} \\ S_{node} \\ S_{comm} \end{bmatrix}$
+分量	内容	维度
+$S_{model}$	各UAV已加载模型	$N \times
+$S_{layer}$	当前切分点参数$(C^{edge}, C^{cloud}, D^{trans})$	$3$
+$S_{node}$	UAV状态$(f_j^{avail}, E_j^{remain})$	$2N$
+$S_{comm}$	信道状态$(R_{i,j}, \sigma_R)$	$N$
+2.8.3 生成模型
+描述状态如何产生观测：
+$p(o_t, s_t | l, \theta) = p(o_t | s_t, l) \cdot p(s_t | s_{t-1}, l)$
+切分点$l$作为动作进入生成模型，因为不同切分点导致不同的状态转移。
+2.8.4 状态转移模型
+$s_{t+1} = s_t + \Delta s(l, j) + \epsilon(l)$
+确定性变化：
+● $\Delta f_j = -f_{i,j}^*$（算力消耗）
+● $\Delta E_j = -E_i^{total}(l, j)$（能量消耗）
+随机扰动：$\epsilon(l) \sim \mathcal{N}(0, \Sigma(l))$
+● 扰动方差与切分点相关
+● 不同切分点的不确定性不同
+
+2.9 DNN感知自由能计算
+2.9.1 自由能定义
+$\tilde{F}(l, j) = D_{KL}(q(s_{t+1} | l, j) \| p(s_{t+1} | s_t, l, j))$
+2.9.2 自由能分解
+$\tilde{F}(l, j) = \tilde{F}_{trans}(l, j) + \tilde{F}_{comp}(l, j) + \tilde{F}_{energy}(l, j)$
+传输自由能（与切分层输出大小相关）：
+$\tilde{F}_{trans}(l, j) = \frac{D_i^{trans}(l)}{R_{i,j}} \cdot \frac{\sigma_R^2}{R_{i,j}^2}$
+物理含义：传输数据量越大、信道越不稳定，自由能越高。
+计算自由能（边缘与云端风险不同）：
+$\tilde{F}_{comp}(l, j) = \frac{C_i^{edge}(l)}{f_{i,j}^*} \cdot \frac{\sigma_f^2}{(f_{i,j}^*)^2} + \frac{C_i^{cloud}(l)}{f_{c,i}^*} \cdot \frac{\sigma_c^2}{(f_{c,i}^*)^2}$
+物理含义：边缘算力波动通常大于云端，早期层切分（$C^{edge}$小）边缘风险低。
+能量自由能：
+$\tilde{F}_{energy}(l, j) = \begin{cases}
+\beta_{energy} & \text{if } \dfrac{E_j^{remain} - E_i^{total}(l,j)}{E^{max}} < 0.2 \\[10pt]
+0 & \text{otherwise}
+\end{cases}$
+推荐$\beta_{energy} = 5$
+注：$\sigma_R^2, \sigma_f^2, \sigma_c^2$为信道、边缘算力、云端算力的方差参数，需根据实际环境标定
+2.9.3 切分点风险特征
+切分位置	$D^{trans}$	传输风险	$C^{edge}$	边缘计算风险
+早期层（Conv1后）	大	高	小	低
+中间层（Conv4后）	中	中	中	中
+晚期层（FC前）	小	低	大	高
+全边缘（$l=L$）	0	无	最大	最高
+全云端（$l=0$）	$InputSize$	最高	0	无
+2.9.4 自由能阈值
+$\tilde{F}_{threshold} = 30$
+$\tilde{F}_{max} = 50$
+经验值，可根据场景调整
+
+2.10 综合风险评估
+2.10.1 综合风险因子
+$\gamma_{i,l,j} = w_{free} \cdot \gamma^{free} + w_{energy} \cdot \gamma^{energy} + w_{channel} \cdot \gamma^{channel} + w_{compute} \cdot \gamma^{compute}$
+各分量：
+$\gamma^{free} = Clip\left(\frac{\tilde{F}(l,j)}{\tilde{F}_{threshold}}, 0, 1\right)$
+$\gamma^{energy} = Clip\left(1 - \frac{E_j^{remain} - E_i^{total}}{E_{safety}}, 0, 1\right)$
+$\gamma^{channel} = Clip\left(1 - \frac{R_{i,j} - R_{min}}{R_{margin}}, 0, 1\right)$
+$\gamma^{compute} = Clip\left(\frac{f_{i,j}^*}{f_j^{avail}}, 0, 1\right)$
+权重设置：
+权重	值	理由
+$w_{free}$	0.35	自由能直接反映预测不确定性
+$w_{energy}$	0.25	能量是任务失败主因之一
+$w_{channel}$	0.25	信道影响传输可靠性
+$w_{compute}$	0.15	算力过载通常可预测
+2.10.2 故障概率
+$p_{fail}(\tilde{F}) = \min\left(1, \frac{\tilde{F}}{\tilde{F}_{max}}\right)$
+
+2.11 Checkpoint决策【修正：理论阈值】
+2.11.1 Checkpoint收益理论界
+定理（Checkpoint收益界）：
+设故障概率为$p_{fail}$，Checkpoint开销为$T_{cp}$，恢复节省为$\Delta T_{save}$，则Checkpoint期望时延收益为：
+$\mathbb{E}[\text{收益}] = p_{fail} \cdot \Delta T_{save} - T_{cp}$
+Checkpoint有益的充要条件：
+$p_{fail} > p_{threshold}$
+其中：
+$p_{threshold} = \frac{T_{cp}}{\Delta T_{save}} = \frac{\gamma_{cp} \cdot OutputSize_{l_{cp}}}{\Delta T_{recovery}^{cp=0} - \Delta T_{recovery}^{cp=1}}$
+2.11.2 恢复时延定义
+无Checkpoint恢复（完全重执行）：
+$\Delta T_{recovery}^{cp=0} = T_i^{upload} + T_i^{edge} + T_i^{trans} + T_i^{cloud} + T_i^{return}$
+有Checkpoint恢复（从断点恢复）：
+$\Delta T_{recovery}^{cp=1} = T_{migrate} + \frac{C_i^{edge}(l_i^*) - C_i^{edge}(l_{cp})}{f_{j_{backup}}}$
+仅需计算$l_{cp}$到$l_i^*$之间的层。
+2.11.3 触发条件（基于理论阈值）
+$x_{cp} = \mathbb{1}\left(\tilde{F}(l,j) > \tilde{F}_{max} \cdot p_{threshold}\right)$
+物理含义：当自由能导致的故障概率超过理论阈值时，启用Checkpoint。
+2.11.4 Checkpoint层选择
+$l_{cp} = \max\{l' \in \mathcal{L}_i^{cp} : l' \leq l\}$
+2.11.5 Checkpoint时间开销
+$T_i^{checkpoint}(l_{cp}) = \gamma_{cp} \cdot OutputSize_{l_{cp}}$
+推荐$\gamma_{cp} = 0.1$ s/MB
+2.11.6 Checkpoint数据量
+$S_i^{checkpoint}(l_{cp}) = OutputSize_{l_{cp}} + S_{metadata}$
+$S_{metadata} \approx 1$KB
+
+2.12 可行性筛选
+2.12.1 可行UAV集合
+对用户$i$和切分点$l$：
+$\mathcal{N}_i^{feasible}(l) = \{j \in \mathcal{N} : Cond^{trans} \land Cond^{compute} \land Cond^{energy} \land Cond^{delay}\}$
+各条件：
+$Cond^{trans} = \left(T_i^{upload}(j) < \tau_i^{max}\right)$
+$Cond^{compute} = \left(f_j^{avail} \geq f_i^{min}(l, j)\right)$
+$Cond^{energy} = \left(E_j^{remain} \geq E_i^{total}(l, j)\right)$
+$Cond^{delay} = \left(T_i^{total}(l, j) \leq \tau_i^{max}\right)$
+2.12.2 预筛选降低复杂度
+策略A：时延预筛选
+快速剔除不可行切分点：
+$\mathcal{L}_i^{feasible} = \{l : \exists j \in \mathcal{N}, T_i^{total}(l, j) \leq \tau_i^{max}\}$
+策略B：效用阈值过滤
+仅保留效用值超过阈值的方案：
+$\mathcal{L}_i^{filtered} = \{l : \max_j \eta_{i,l,j}^{stage2} > \eta_{threshold}\}$
+2.12.3 云端兜底方案
+若所有UAV方案均不可行，生成纯云端方案（$l = 0$）：
+选择最近UAV作为中继：
+$j_{relay} = \arg\min_{j \in \mathcal{N}} d_{i,j}$
+云端时延：
+$T_i^{cloud,total} = T_i^{upload}(j_{relay}) + \frac{InputSize_i}{R_{backhaul}} + \frac{C_i^{total}}{f_c} + T_i^{return}(0)$
+若$T_i^{cloud,total} \leq \tau_i^{max}$，则生成兜底投标。
+
+2.13 效用计算
+2.13.1 时延效用
+$U_{time}(l, j) = \max\left(0, 1 - \frac{T_i^{total}(l, j)}{\tau_i^{max}}\right)$
+2.13.2 能效效用
+$U_{energy}(l, j) = \max\left(0, 1 - \frac{E_i^{total}(l, j)}{E_j^{budget}}\right)$
+2.13.3 可靠性效用
+$U_{reliability}(l, j) = 1 - \gamma_{i,l,j}$
+2.13.4 综合效用（阶段2效用）
+$\eta_{i,l,j}^{stage2} = \beta_1 \cdot U_{time} + \beta_2 \cdot U_{energy} + \beta_3 \cdot U_{reliability}$
+权重设置：
+权重	值	理由
+$\beta_1$	0.45	时延是核心优化目标
+$\beta_2$	0.25	能效影响系统续航
+$\beta_3$	0.30	可靠性保障任务完成
+
+2.14 候选方案采样与筛选
+2.14.1 候选方案生成
+遍历所有切分点与可行UAV组合：
+$Candidates_i = \{(l, j) : l \in \mathcal{L}_i^{feasible}, j \in \mathcal{N}_i^{feasible}(l)\}$
+2.14.2 价格引导采样（非首轮）
+若有价格反馈，调整UAV选择概率：
+$P(j | PriceFeedback) \propto \frac{1}{P_j^{comp}} \cdot \frac{1}{d_{i,j}^2} \cdot (1 - Util_j)$
+价格高、距离远、负载重的UAV被选中概率降低。
+2.14.3 Top-K筛选
+按效用值降序排序，选取前$K$个方案：
+$\mathcal{B}_i = TopK(Candidates_i, \eta_{i,l,j}^{stage2}, K)$
+推荐$K = 10$，可根据模型层数$L$调整
+
+2.15 投标封装
+2.15.1 投标字段
+字段	符号	类型	说明
+用户ID	$i$	整数	任务发起者
+模型ID	$m_i$	整数	DNN模型标识
+切分层	$l$	整数	切分点位置
+目标UAV	$j$	整数	边缘执行节点
+边缘计算量	$C_i^{edge}(l)$	实数	前$l$层FLOPs
+云端计算量	$C_i^{cloud}(l)$	实数	后$L-l$层FLOPs
+传输数据量	$D_i^{trans}(l)$	实数	第$l$层输出大小
+请求边缘算力	$f_{i,j}^*$	实数	凸优化最优解
+请求云端算力	$f_{c,i}^*$	实数	凸优化最优解
+首选信道	$s^{primary}$	整数	传输信道
+备选信道	$\mathcal{S}^{backup}$	列表	按优先级排序
+Checkpoint层	$l_{cp}$	整数	Checkpoint位置
+Checkpoint标志	$x_{cp}$	二值	是否启用
+预测时延	$T_{i,l,j}$	实数	总时延
+总能耗	$E_{i,l,j}^{total}$	实数	方案总能耗
+自由能	$\tilde{F}(l,j)$	实数	执行风险度量
+风险因子	$\gamma_{i,l,j}$	实数	综合风险
+效用值	$\eta_{i,l,j}^{stage2}$	实数	阶段2效用
+时间戳	$t_{gen}$	时间	生成时间
+2.15.2 投标结构
+$Bid_{i,b} = (i, m_i, l, j, C^{edge}, C^{cloud}, D^{trans}, f_{i,j}^*, f_{c,i}^*, s, \mathcal{S}^{backup}, l_{cp}, x_{cp}, T, E, \tilde{F}, \gamma, \eta, t_{gen})$
+
+2.16 投标传输
+2.16.1 传输路径选择
+$Path_i = \begin{cases}
+\text{直接传输} & \text{if } d_{i, j_{auc}} \leq d_{direct}^{max} \\
+\text{多跳路由} & \text{otherwise}
+\end{cases}$
+多跳路由：
+$Route_i = (i \to j_{nearest} \to \cdots \to j_{auc})$
+其中$j_{nearest} = \arg\min_{j \in \mathcal{N}} d_{i,j}$
+2.16.2 传输确认
+拍卖方确认接收：
+$ACK_{j_{auc}} \to i$
+
+2.17 资源信息更新T1【新增】
+2.17.1 更新时机
+投标生成后，各UAV广播基础资源状态。
+2.17.2 更新内容
+$Update_{T1} = \{f_j^{avail}, E_j^{remain}, LoadedModels_j\}_{j \in \mathcal{N}}$
+2.17.3 更新目的
+● 为阶段3提供最新资源状态
+● 支持多拍卖方场景的资源同步
+
+2.18 阶段2输出接口
+传递给阶段3的数据
+数据项	符号	说明
+所有用户投标集	$\{\mathcal{B}_i\}_{i \in \mathcal{U}}$	每用户最多$K$个投标
+任务优先级	$\{\omega_i\}$	来自阶段1，传递使用
+任务分类	$(\mathcal{U}_{high}, \mathcal{U}_{medium}, \mathcal{U}_{low})$	来自阶段1，传递使用
+模型结构信息	$\{LayerProfile_m\}$	用于理解切分决策
+资源状态（T1更新后）	$\{f_j^{avail}, E_j^{remain}\}$	最新状态
+传递给阶段4的数据
+数据项	符号	说明
+自由能	$\tilde{F}(l,j)$	用于运行时风险监控
+Checkpoint配置	$(x_{cp}, l_{cp})$	执行时Checkpoint位置
+最优算力分配	$(f_{i,j}^*, f_{c,i}^*)$	执行时算力配置
+
+2.19 与前后阶段的衔接
+← 来自阶段0
+数据项	用途
+DNN模型库$\{LayerProfile_m\}$	解析切分点参数
+UAV位置$\{P_j\}$	距离与速率计算
+UAV状态$\{f_j^{avail}, E_j^{remain}\}$	可行性判断与凸优化
+系统参数	通信模型与能耗计算
+← 来自阶段1
+数据项	用途
+优先级$\omega_i$	透传给阶段3
+任务分类	透传给阶段3
+拍卖方$j_{auc}$	投标发送目标
+通信状态	决定传输路径
+← 来自阶段4（闭环）
+数据项	用途
+价格反馈	引导UAV选择，避免拥塞
+利用率	感知系统负载状态
+模型加载状态	引导模型复用
+→ 传递给阶段3
+数据项	阶段3用途
+投标集$\{\mathcal{B}_i\}$	拍卖决策输入
+效用值$\eta^{stage2}$	与优先级$\omega_i$结合计算最终效用
+优先级$\omega_i$	效用计算
+任务分类	差异化约束
+效用融合公式【修正：指数衰减】：
+$\eta_{i,l,j}^{final} = \omega_i \cdot \eta_{i,l,j}^{stage2} \cdot \exp\left(-\frac{\tilde{F}(l,j)}{\tilde{F}_{threshold}}\right)$
+→ 传递给阶段4
+数据项	阶段4用途
+自由能$\tilde{F}$	运行时风险监控
+Checkpoint配置	执行时保存断点
+最优算力$(f_{i,j}^*, f_{c,i}^*)$	执行时资源分配
+
+2.20 计算复杂度分析
+环节	复杂度	说明
+DNN解析	$O(L)$	遍历模型层
+候选方案生成	$O((L+1) \times N)$	所有切分点×所有UAV
+凸优化求解	$O(1)$	每方案四组闭型解
+自由能计算	$O(1)$	每方案常数时间
+Top-K筛选	$O((L+1) \cdot N \cdot \log K)$	排序
+单用户总复杂度	$O(L \cdot N)$	主要受候选方案数主导
+全系统复杂度	$O(M \cdot L \cdot N)$	所有用户
+时间预算：$T_{bid} \leq 200$ms，可满足。
+复杂度对比：
+设计	切分点数	候选方案数	典型值
+原设计	$K$个	$K \times N$	$8 \times 5 = 40$
+修正后	$L+1$个	$(L+1) \times N$	$51 \times 5 = 255$
+通过预筛选可有效降低实际计算量。
+
+2.21 本阶段关键设计决策
+决策	选择	理由
+切分变量	所有层边界$\{0,...,L\}$	最大化切分灵活性
+算力分配	凸优化闭型解	保证全局最优，计算高效
+时延模型	串行+返回时延	符合DNN数据依赖特性
+风险度量	自由能$\tilde{F}$	统一量化传输、计算、能量风险
+Checkpoint决策	理论阈值驱动	有理论依据，避免盲目设置
+Checkpoint位置	层边界对齐	保存完整特征图
+效用结构	时延+能效+可靠性	覆盖核心性能维度
+筛选方式	Top-K	提供多样化选择给拍卖
+投标传输	直接/多跳	适应不同通信条件
+
+2.22 待确认细节
+项目	当前状态	说明
+自由能方差参数$\sigma_R^2, \sigma_f^2, \sigma_c^2$	未明确	需根据实际环境标定
+风险因子权重$(w{free}, w_{energy}, w_{channel}, w_{compute})$_	0.35/0.25/0.25/0.15	可根据场景调整
+效用权重$(\beta_1, \beta_2, \beta_3)$	0.45/0.25/0.30	可根据场景调整
+Top-K值$K$	10	可根据模型层数调整
+Checkpoint时间系数$\gamma{cp}$_	0.1 s/MB	需根据存储性能标定
+直接传输距离阈值$d{direct}^{max}$_	未明确	取决于通信条件
+
+2.23 阶段2流程图
+来自阶段0：模型库、UAV状态、系统参数
+来自阶段1：优先级、任务分类、拍卖方
+来自阶段4（闭环）：价格反馈、利用率
+              ↓
+┌─────────────────────────────────────┐
+│         DNN模型解析                  │
+│  提取LayerProfile，确定L_cut        │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│      对每个用户i，每个切分点l        │
+│  ┌─────────────────────────────┐    │
+│  │ 计算切分参数C^edge, C^cloud │    │
+│  └─────────────────────────────┘    │
+│              ↓                       │
+│  ┌─────────────────────────────┐    │
+│  │ 对每个可行UAV j             │    │
+│  │  - 凸优化求解(f*, f_c*)    │    │
+│  │  - 计算时延T_total          │    │
+│  │  - 计算能耗E_total          │    │
+│  │  - 计算自由能F̃              │    │
+│  │  - 计算风险因子γ            │    │
+│  │  - Checkpoint决策           │    │
+│  │  - 计算效用η^stage2         │    │
+│  └─────────────────────────────┘    │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         Top-K筛选                    │
+│  生成投标集B_i                      │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         投标传输                     │
+│  直接/多跳路由 → 拍卖方j_auc        │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│      资源信息更新T1                  │
+│  广播{f_j^avail, E_j^remain}        │
+└─────────────────────────────────────┘
+              ↓
+输出：投标集、优先级、任务分类 → 阶段3
+      自由能、Checkpoint配置、算力 → 阶段4
+
+阶段3：社会福利最大化与组合拍卖（完整整理）
+
+3.1 阶段目标
+1. 在资源约束下选择最优切分方案组合，最大化系统整体效用（社会福利）
+2. 保障高优先级任务必须被服务，中低优先级任务可被拒绝
+3. 通过拉格朗日对偶分解实现分布式求解
+4. 处理约束冲突，通过多策略贪心恢复获得可行解
+5. 生成资源定价信号，用于公平计费和下一轮反馈
+6. 完成资源信息更新T2、T3
+核心机制：组合拍卖 + 对偶分解 + 多策略贪心恢复 + 主动推理融合
+
+3.2 输入数据
+来自阶段1
+数据项	符号	用途
+任务优先级	$\{\omega_i\}_{i \in \mathcal{U}}$	最终效用计算
+任务分类	$(\mathcal{U}_{high}, \mathcal{U}_{medium}, \mathcal{U}_{low})$	差异化约束
+主拍卖方	$j_{auc}^{primary}$	决策执行者
+备选拍卖方	$j_{auc}^{backup}$	故障时接管
+来自阶段2
+数据项	符号	用途
+投标集	$\{\mathcal{B}_i\}_{i \in \mathcal{U}}$	拍卖输入
+投标详情	$(l, j, C^{edge}, C^{cloud}, D^{trans}, f_{i,j}^*, f_{c,i}^*, \tilde{F}, \gamma, \eta^{stage2}, ...)$	约束检查与效用计算
+模型结构信息	$\{LayerProfile_m\}$	理解切分决策
+资源状态（T1更新后）	$\{f_j^{avail}, E_j^{remain}\}$	约束右端项
+系统资源状态
+数据项	符号	用途
+UAV可用算力	$\{f_j^{avail}\}_{j \in \mathcal{N}}$	算力约束
+UAV可用能量	$\{E_j^{avail}\}_{j \in \mathcal{N}}$	能量约束
+可用信道集	$\mathcal{S}$	信道约束
+云端总算力	$F_c$	云端约束
+UAV模型加载限制	$M_j^{max}$	模型约束
+UAV功率预算	$P_j^{comp,budget}$	瞬时功率约束
+
+3.3 决策变量
+$x_{i,l,j} \in \{0, 1\}, \quad \forall i \in \mathcal{U}, l \in \mathcal{L}_i^{cut}, j \in \mathcal{N}$
+取值	含义
+$x_{i,l,j} = 1$	用户$i$选择切分层$l$、目标UAV $j$的方案被接受
+$x_{i,l,j} = 0$	该方案未被接受
+决策空间大小：
+$|x| = \sum_{i \in \mathcal{U}} |\mathcal{B}_i| \leq M \cdot K$
+典型值：$M = 50$用户，$K = 10$投标/用户，共500个决策变量
+
+3.4 最终效用计算【修正：指数衰减融合】
+3.4.1 效用融合公式
+$\eta_{i,l,j}^{final} = \omega_i \cdot \eta_{i,l,j}^{stage2} \cdot \exp\left(-\frac{\tilde{F}(l,j)}{\tilde{F}_{threshold}}\right)$
+各分量来源：
+分量	来源	含义
+$\omega_i$	阶段1	任务静态优先级
+$\eta_{i,l,j}^{stage2}$	阶段2	时延+能效+可靠性综合效用
+$\exp(-\tilde{F}/\tilde{F}_{threshold})$	阶段2自由能计算	自由能指数衰减修正
+3.4.2 指数衰减特性
+$\tilde{F}(l,j)$	$\exp(-\tilde{F}/\tilde{F}_{threshold})$	含义
+0	1.0	零风险，无惩罚
+15	$\approx 0.61$	中风险，效用衰减39%
+30	$\approx 0.37$	高风险，效用衰减63%
+60	$\approx 0.14$	超高风险，效用衰减86%
+推荐$\tilde{F}_{threshold} = 30$
+3.4.3 融合创新意义
+自由能不仅用于风险评估，还直接影响拍卖效用。这使得拍卖机制自动偏好低风险方案，实现了主动推理的风险规避与拍卖的全局优化的统一。
+3.4.4 效用值范围
+$\eta_{i,l,j}^{final} \in [0, 1]$
+
+3.5 目标函数
+社会福利最大化
+$\max_{x} \quad SW = \sum_{i \in \mathcal{U}} \sum_{l \in \mathcal{L}_i^{cut}} \sum_{j \in \mathcal{N}} \eta_{i,l,j}^{final} \cdot x_{i,l,j}$
+物理含义
+社会福利是所有中标方案效用值的总和，反映系统整体服务质量。最大化社会福利意味着在资源约束下，尽可能多地服务高价值任务，同时偏好低风险方案。
+
+3.6 约束条件【修正】
+C1a. 高优先级任务强制服务约束【新增】
+$\sum_{l \in \mathcal{L}_i^{cut}} \sum_{j \in \mathcal{N}} x_{i,l,j} = 1, \quad \forall i \in \mathcal{U}_{high}$
+高优先级任务必须被服务，恰好选择一个方案。
+C1b. 中低优先级任务唯一性约束
+$\sum_{l \in \mathcal{L}_i^{cut}} \sum_{j \in \mathcal{N}} x_{i,l,j} \leq 1, \quad \forall i \in \mathcal{U}_{medium} \cup \mathcal{U}_{low}$
+中低优先级任务最多选择一个方案，允许被拒绝。
+C2. UAV算力容量约束
+$\sum_{i \in \mathcal{U}} \sum_{l \in \mathcal{L}_i^{cut}} f_{i,j}^* \cdot x_{i,l,j} \leq f_j^{avail}, \quad \forall j \in \mathcal{N}$
+每个UAV分配的算力不超过可用容量，使用凸优化最优解$f_{i,j}^*$。
+C3. 信道互斥约束
+$\sum_{i \in \mathcal{U}} \sum_{l \in \mathcal{L}_i^{cut}} \sum_{j: s_{i,l,j}=s, s \neq 0} x_{i,l,j} \leq 1, \quad \forall s \in \mathcal{S}$
+每个独占信道同时只能服务一个任务。$s = 0$表示不需要独占信道，不受此约束。
+C4. UAV能量容量约束
+$\sum_{i \in \mathcal{U}} \sum_{l \in \mathcal{L}_i^{cut}} E_{i,l,j}^{total} \cdot x_{i,l,j} \leq E_j^{avail}, \quad \forall j \in \mathcal{N}$
+每个UAV消耗的能量不超过可用能量。
+C5. 云端算力容量约束
+$\sum_{i \in \mathcal{U}} \sum_{l \in \mathcal{L}_i^{cut}} \sum_{j \in \mathcal{N}} f_{c,i}^* \cdot x_{i,l,j} \leq F_c$
+所有使用云端的任务消耗总算力不超过云端容量，使用凸优化最优解$f_{c,i}^*$。
+C6. 模型加载约束
+$\sum_{m \in \mathcal{M}} y_{j,m} \leq M_j^{max}, \quad \forall j \in \mathcal{N}$
+每个UAV同时加载的不同模型数量有限。
+辅助变量定义：
+$y_{j,m} = \mathbb{1}(\exists i, l: m_i = m \land x_{i,l,j} = 1)$
+线性化处理：
+$\sum_{i: m_i = m} \sum_{l} x_{i,l,j} \leq K \cdot y_{j,m}, \quad \forall j, m$
+$y_{j,m} \in \{0, 1\}$
+典型值：$M_j^{max} = 3\text{-}5$个模型
+C7. 二值约束
+$x_{i,l,j} \in \{0, 1\}, \quad \forall i, l, j$
+C8. 瞬时功率约束【新增】
+$\sum_{i \in \mathcal{U}} \sum_{l \in \mathcal{L}_i^{cut}} \kappa_{edge} \cdot (f_{i,j}^*)^3 \cdot x_{i,l,j} \leq P_j^{comp,budget}, \quad \forall j \in \mathcal{N}$
+其中：
+$P_j^{comp,budget} = (P_j^{max} - P_j^{hover}) \cdot T_{window}$
+参数	典型值	说明
+$P_j^{max}$	300W	UAV总功率上限
+$P_j^{hover}$	150W	悬停功率
+$T_{window}$	1s	时间窗口
+$P_j^{comp,budget}$	150J	计算功率预算
+
+3.7 约束条件汇总
+$\begin{aligned}
+& \sum_{l,j} x_{i,l,j} = 1, \quad \forall i \in \mathcal{U}_{high} & \text{(C1a: 高优先级必须服务)} \\[5pt]
+& \sum_{l,j} x_{i,l,j} \leq 1, \quad \forall i \in \mathcal{U}_{medium} \cup \mathcal{U}_{low} & \text{(C1b: 中低优先级可拒绝)} \\[5pt]
+& \sum_{i,l} f_{i,j}^* \cdot x_{i,l,j} \leq f_j^{avail}, \quad \forall j & \text{(C2: UAV算力)} \\[5pt]
+& \sum_{i,l,j: s_{i,l,j}=s} x_{i,l,j} \leq 1, \quad \forall s \neq 0 & \text{(C3: 信道互斥)} \\[5pt]
+& \sum_{i,l} E_{i,l,j}^{total} \cdot x_{i,l,j} \leq E_j^{avail}, \quad \forall j & \text{(C4: UAV能量)} \\[5pt]
+& \sum_{i,l,j} f_{c,i}^* \cdot x_{i,l,j} \leq F_c & \text{(C5: 云端算力)} \\[5pt]
+& \sum_{m} y_{j,m} \leq M_j^{max}, \quad \forall j & \text{(C6: 模型加载)} \\[5pt]
+& x_{i,l,j} \in \{0, 1\} & \text{(C7: 二值约束)} \\[5pt]
+& \sum_{i,l} \kappa_{edge} (f_{i,j}^*)^3 x_{i,l,j} \leq P_j^{comp,budget}, \quad \forall j & \text{(C8: 瞬时功率)}
+\end{aligned}$
+
+3.8 高优先级强制约束的可行性保障
+3.8.1 问题
+强制约束C1a可能导致优化问题无可行解（资源不足时无法满足所有高优先级任务）。
+3.8.2 软约束松弛（推荐）
+引入惩罚变量$z_i \geq 0$：
+$\sum_{l,j} x_{i,l,j} + z_i = 1, \quad \forall i \in \mathcal{U}_{high}$
+修正目标函数：
+$\max_{x,z} \quad SW - M_{penalty} \cdot \sum_{i \in \mathcal{U}_{high}} z_i$
+其中$M_{penalty}$为足够大的惩罚系数，推荐$M{penalty} = 100$_。
+物理含义：$z_i > 0$表示高优先级任务$i$未被满足，受到巨大惩罚。
+3.8.3 云端兜底强制
+对于无法被UAV服务的高优先级任务，强制使用云端：
+$\text{若 } \mathcal{N}_i^{feasible} = \emptyset \land i \in \mathcal{U}_{high}, \text{ 则 } x_{i,0,j_{relay}} = 1$
+其中$j_{relay} = \arg\min_j d_{i,j}$为最近UAV作为中继。
+
+3.9 QoS预处理
+在拍卖前剔除不满足硬约束的方案。
+3.9.1 时延约束检查
+$\text{若 } T_{i,l,j}^{total} > \tau_i^{max}, \text{ 则从 } \mathcal{B}_i \text{ 中移除该方案}$
+3.9.2 Checkpoint强制约束
+$\text{若 } \tilde{F}(l,j) > \tilde{F}_{threshold} \land T_{i,l,j} > T_{cp,min}, \text{ 则强制 } x_{cp} = 1$
+强制启用后重新计算时延，若仍超时则剔除。
+
+3.10 完整优化问题
+$\begin{aligned}
+\max_{x,z} \quad & SW = \sum_{i,l,j} \eta_{i,l,j}^{final} \cdot x_{i,l,j} - M_{penalty} \sum_{i \in \mathcal{U}_{high}} z_i \\[10pt]
+\text{s.t.} \quad & \sum_{l,j} x_{i,l,j} + z_i = 1, \quad \forall i \in \mathcal{U}_{high} & \text{(C1a)} \\[5pt]
+& \sum_{l,j} x_{i,l,j} \leq 1, \quad \forall i \in \mathcal{U}_{medium} \cup \mathcal{U}_{low} & \text{(C1b)} \\[5pt]
+& \sum_{i,l} f_{i,j}^* x_{i,l,j} \leq f_j^{avail}, \quad \forall j & \text{(C2)} \\[5pt]
+& \sum_{i,l,j: s=s_{i,l,j}} x_{i,l,j} \leq 1, \quad \forall s \neq 0 & \text{(C3)} \\[5pt]
+& \sum_{i,l} E_{i,l,j}^{total} x_{i,l,j} \leq E_j^{avail}, \quad \forall j & \text{(C4)} \\[5pt]
+& \sum_{i,l,j} f_{c,i}^* x_{i,l,j} \leq F_c & \text{(C5)} \\[5pt]
+& \sum_m y_{j,m} \leq M_j^{max}, \quad \forall j & \text{(C6)} \\[5pt]
+& x_{i,l,j} \in \{0,1\}, \quad z_i \geq 0 & \text{(C7)} \\[5pt]
+& \sum_{i,l} \kappa_{edge}(f_{i,j}^*)^3 x_{i,l,j} \leq P_j^{comp,budget}, \quad \forall j & \text{(C8)}
+\end{aligned}$
+问题性质：0-1整数线性规划（0-1 ILP），NP-hard
+
+3.11 拉格朗日对偶分解
+3.11.1 引入对偶变量
+对耦合约束（C2-C6, C8）引入拉格朗日乘子：
+约束	对偶变量	维度	经济学含义
+C2（UAV算力）	$\lambda_j \geq 0$	$N$	UAV $j$算力价格
+C3（信道）	$\mu_s \geq 0$	$	\mathcal{S}
+C4（UAV能量）	$\nu_j \geq 0$	$N$	UAV $j$能量价格
+C5（云端算力）	$\xi \geq 0$	$1$	云端算力价格
+C6（模型加载）	$\psi_{j,m} \geq 0$	$N \times	\mathcal{M}
+C8（瞬时功率）	$\phi_j \geq 0$	$N$	UAV $j$功率价格
+3.11.2 拉格朗日函数
+$\begin{aligned}
+L(x, \lambda, \mu, \nu, \xi, \psi, \phi) = & \sum_{i,l,j} \eta_{i,l,j}^{final} \cdot x_{i,l,j} \\[5pt]
+& - \sum_{j} \lambda_j \left( \sum_{i,l} f_{i,j}^* x_{i,l,j} - f_j^{avail} \right) \\[5pt]
+& - \sum_{s} \mu_s \left( \sum_{i,l,j: s_{i,l,j}=s} x_{i,l,j} - 1 \right) \\[5pt]
+& - \sum_{j} \nu_j \left( \sum_{i,l} E_{i,l,j}^{total} x_{i,l,j} - E_j^{avail} \right) \\[5pt]
+& - \xi \left( \sum_{i,l,j} f_{c,i}^* x_{i,l,j} - F_c \right) \\[5pt]
+& - \sum_{j,m} \psi_{j,m} \left( \sum_{i: m_i=m} \sum_l x_{i,l,j} - M_j^{max,m} \right) \\[5pt]
+& - \sum_{j} \phi_j \left( \sum_{i,l} \kappa_{edge}(f_{i,j}^*)^3 x_{i,l,j} - P_j^{comp,budget} \right)
+\end{aligned}$
+3.11.3 调整后效用【修正】
+重新整理，按$x_{i,l,j}$分组：
+$\tilde{\eta}_{i,l,j} = \eta_{i,l,j}^{final} - \lambda_j f_{i,j}^* - \nu_j E_{i,l,j}^{total} - \phi_j \kappa_{edge}(f_{i,j}^*)^3 - \mu_{s_{i,l,j}} \cdot \mathbb{1}(s_{i,l,j} \neq 0) - \xi f_{c,i}^* - \psi_{j, m_i}$
+物理含义：调整后效用 = 原效用 - 资源使用成本
+3.11.4 对偶函数
+$g(\lambda, \mu, \nu, \xi, \psi, \phi) = \max_{x \in \mathcal{X}} L(x, \lambda, \mu, \nu, \xi, \psi, \phi)$
+可行域$\mathcal{X}$仅含约束C1a、C1b和C7（局部约束）：
+$\mathcal{X} = \left\{ x : \sum_{l,j} x_{i,l,j} = 1, \forall i \in \mathcal{U}_{high}; \sum_{l,j} x_{i,l,j} \leq 1, \forall i \in \mathcal{U}_{medium} \cup \mathcal{U}_{low}; x_{i,l,j} \in \{0,1\} \right\}$
+3.11.5 对偶问题
+$\min_{\lambda \geq 0, \mu \geq 0, \nu \geq 0, \xi \geq 0, \psi \geq 0, \phi \geq 0} g(\lambda, \mu, \nu, \xi, \psi, \phi)$
+
+3.12 子问题分解与求解
+3.12.1 问题分解
+由于约束C1使用户之间独立，对偶函数可分解为$M$个子问题：
+$g(\cdot) = \sum_{i \in \mathcal{U}} V_i^*(\lambda, \mu, \nu, \xi, \psi, \phi) + \text{Const}$
+3.12.2 用户$i$的子问题
+高优先级用户（$i \in \mathcal{U}_{high}$）：
+$V_i^* = \max_{l \in \mathcal{L}_i, j \in \mathcal{N}} \tilde{\eta}_{i,l,j}$
+必须选择一个方案。
+中低优先级用户（$i \in \mathcal{U}_{medium} \cup \mathcal{U}_{low}$）：
+$V_i^* = \max\left(0, \max_{l \in \mathcal{L}_i, j \in \mathcal{N}} \tilde{\eta}_{i,l,j}\right)$
+可以选择不服务（效用为0）。
+3.12.3 闭式解
+最优方案选择：
+$(l_i^*, j_i^*) = \arg\max_{l \in \mathcal{L}_i, j \in \mathcal{N}} \tilde{\eta}_{i,l,j}$
+决策规则：
+对于高优先级用户：
+$x_{i,l,j}^* = \mathbb{1}[(l,j) = (l_i^*, j_i^*)]$
+对于中低优先级用户：
+$x_{i,l,j}^* = \begin{cases}
+1 & \text{if } (l,j) = (l_i^*, j_i^*) \text{ and } \tilde{\eta}_{i,l_i^*,j_i^*} > 0 \\
+0 & \text{otherwise}
+\end{cases}$
+物理含义：
+● 高优先级用户必须选择效用最高的方案
+● 中低优先级用户：若最大调整后效用为正（收益大于成本），则接受该方案；否则拒绝服务
+
+3.13 次梯度法求解对偶问题
+3.13.1 次梯度计算
+给定当前解$x^{(t)}$：
+UAV算力次梯度：
+$g_{\lambda_j}^{(t)} = \sum_{i,l} f_{i,j}^* \cdot x_{i,l,j}^{(t)} - f_j^{avail}$
+信道次梯度：
+$g_{\mu_s}^{(t)} = \sum_{i,l,j: s_{i,l,j}=s} x_{i,l,j}^{(t)} - 1$
+UAV能量次梯度：
+$g_{\nu_j}^{(t)} = \sum_{i,l} E_{i,l,j}^{total} \cdot x_{i,l,j}^{(t)} - E_j^{avail}$
+云端算力次梯度：
+$g_{\xi}^{(t)} = \sum_{i,l,j} f_{c,i}^* \cdot x_{i,l,j}^{(t)} - F_c$
+模型加载次梯度：
+$g_{\psi_{j,m}}^{(t)} = \sum_{i: m_i=m} \sum_l x_{i,l,j}^{(t)} - M_j^{max,m}$
+瞬时功率次梯度【新增】：
+$g_{\phi_j}^{(t)} = \sum_{i,l} \kappa_{edge} (f_{i,j}^*)^3 \cdot x_{i,l,j}^{(t)} - P_j^{comp,budget}$
+次梯度含义：
+● $g > 0$：资源超载，需提价
+● $g < 0$：资源闲置，可降价
+● $g = 0$：供需平衡
+3.13.2 对偶变量更新
+步长序列（Polyak步长）：
+$\epsilon^{(t)} = \frac{\epsilon_0}{t + 1}$
+推荐$\epsilon_0 = 0.5$
+更新规则：
+$\lambda_j^{(t+1)} = \left[ \lambda_j^{(t)} + \epsilon^{(t)} \cdot g_{\lambda_j}^{(t)} \right]^+$
+$\mu_s^{(t+1)} = \left[ \mu_s^{(t)} + \epsilon^{(t)} \cdot g_{\mu_s}^{(t)} \right]^+$
+$\nu_j^{(t+1)} = \left[ \nu_j^{(t)} + \epsilon^{(t)} \cdot g_{\nu_j}^{(t)} \right]^+$
+$\xi^{(t+1)} = \left[ \xi^{(t)} + \epsilon^{(t)} \cdot g_{\xi}^{(t)} \right]^+$
+$\psi_{j,m}^{(t+1)} = \left[ \psi_{j,m}^{(t)} + \epsilon^{(t)} \cdot g_{\psi_{j,m}}^{(t)} \right]^+$
+$\phi_j^{(t+1)} = \left[ \phi_j^{(t)} + \epsilon^{(t)} \cdot g_{\phi_j}^{(t)} \right]^+$
+投影算子$[\cdot]^+$确保非负性。
+3.13.3 收敛条件
+主收敛条件：次梯度范数足够小
+$\|g^{(t)}\|_2 < \epsilon_{tol}$
+推荐$\epsilon{tol} = 10^{-4}$_
+辅助停止条件：
+● 达到最大迭代次数：$t \geq T_{max}$（推荐$T{max} = 100$_）
+● 连续无改进：社会福利改进率小于阈值持续$patience$次
+收敛速度：$O(1/\epsilon_{tol}^2)$次迭代
+
+3.14 分布式迭代流程
+Step 1：初始化
+$\lambda_j^{(0)} = 0, \quad \mu_s^{(0)} = 0, \quad \nu_j^{(0)} = 0, \quad \xi^{(0)} = 0, \quad \psi_{j,m}^{(0)} = 0, \quad \phi_j^{(0)} = 0$
+Step 2：迭代主循环
+对每次迭代$t = 0, 1, \ldots, T_{max}-1$：
+2.1 拍卖方广播当前对偶变量$(\lambda^{(t)}, \mu^{(t)}, \nu^{(t)}, \xi^{(t)}, \psi^{(t)}, \phi^{(t)})$
+2.2 各用户并行求解子问题：
+● 计算每个投标的调整后效用$\tilde{\eta}_{i,l,j}$
+● 选择最优方案$(l_i^*, j_i^*)$
+● 决策：高优先级必选；中低优先级若$\tilde{\eta} > 0$则接受，否则拒绝
+2.3 用户上报决策给拍卖方
+2.4 拍卖方计算次梯度
+2.5 拍卖方更新对偶变量
+2.6 检查收敛条件
+Step 3：输出最优解
+保存迭代过程中社会福利最高的可行解。
+
+3.15 多策略贪心恢复
+3.15.1 问题描述
+对偶分解得到的解可能违反耦合约束，需进行可行性恢复。
+违反度量：
+$V_j^{compute} = \max\left(0, \sum_{i,l} f_{i,j}^* x_{i,l,j} - f_j^{avail}\right)$
+$V_s^{channel} = \max\left(0, \sum_{i,l,j: s_{i,l,j}=s} x_{i,l,j} - 1\right)$
+$V_j^{energy} = \max\left(0, \sum_{i,l} E_{i,l,j} x_{i,l,j} - E_j^{avail}\right)$
+$V^{cloud} = \max\left(0, \sum_{i,l,j} f_{c,i}^* x_{i,l,j} - F_c\right)$
+$V_j^{power} = \max\left(0, \sum_{i,l} \kappa_{edge}(f_{i,j}^*)^3 x_{i,l,j} - P_j^{comp,budget}\right)$
+3.15.2 多策略设计
+执行多种排序策略的贪心分配，选择社会福利最高者：
+策略1：按优先级排序
+$SortKey_1(i) = \omega_i$
+优先服务高优先级任务。
+策略2：按效用密度排序
+$density_i = \frac{\max_{l,j} \eta_{i,l,j}^{final}}{f_{i,l^*,j^*}^* / f^{max} + E_{i,l^*,j^*} / E^{max} + 0.1}$
+$SortKey_2(i) = density_i$
+优先服务"性价比"高的任务。
+策略3：按资源需求排序（升序）
+$resource_i = f_{i,l^*,j^*}^* + \frac{E_{i,l^*,j^*}}{E^{max}} \cdot f^{max}$
+$SortKey_3(i) = resource_i \quad \text{（升序）}$
+优先分配资源需求小的任务。
+策略4：混合评分排序
+$SortKey_4(i) = \omega_i \times density_i$
+策略5：按切分效率排序
+$efficiency_i = \frac{\eta_{i,l^*,j^*}}{D_i^{trans}(l^*) + 1}$
+$SortKey_5(i) = efficiency_i$
+优先分配传输效率高的任务。
+策略6：按模型热度排序
+$hotness_i = \sum_{k: m_k = m_i, \pi(k)=j^*} 1$
+$SortKey_6(i) = hotness_i$
+优先分配到已加载相同模型的UAV。
+3.15.3 贪心分配逻辑
+对每种策略：
+1. 初始化资源状态：
+  ○ $f_j^{remain} = f_j^{avail}$
+  ○ $E_j^{remain} = E_j^{avail}$
+  ○ $F_c^{remain} = F_c$
+  ○ $P_j^{remain} = P_j^{comp,budget}$
+  ○ $Channels^{used} = \emptyset$
+2. 按排序遍历用户，对每个用户：
+  ○ 遍历其投标（按效用降序）
+  ○ 检查约束：算力、能量、信道、云端、模型加载、功率
+  ○ 若通过则分配，扣减资源，累加社会福利
+  ○ 否则尝试下一个投标
+3. 高优先级强制处理：若高优先级任务无可行投标，尝试云端兜底
+4. 记录该策略的社会福利
+3.15.4 最优策略选择
+$SW_{best} = \max(SW_1, SW_2, SW_3, SW_4, SW_5, SW_6)$
+选择对应策略的分配结果作为最终解。
+
+3.16 资源信息更新T2、T3【新增】
+3.16.1 T2：拍卖决策后更新已分配资源
+更新时机：拍卖决策完成后
+更新内容：
+$f_j^{allocated} = \sum_{i \in \mathcal{U}_{accepted}, l: x_{i,l,j}=1} f_{i,j}^*$
+$E_j^{allocated} = \sum_{i \in \mathcal{U}_{accepted}, l: x_{i,l,j}=1} E_{i,l,j}^{total}$
+$F_c^{allocated} = \sum_{i \in \mathcal{U}_{accepted}} f_{c,i}^*$
+3.16.2 T3：价格更新后广播
+更新时机：T2完成后
+更新内容：
+$PriceUpdate = \{P_j^{comp,new}, P_j^{energy,new}, P_s^{new}\}_{j \in \mathcal{N}, s \in \mathcal{S}}$
+广播对象：所有UAV、备选拍卖方
+3.16.3 多拍卖方同步
+● 主拍卖方$j_{auc}^{primary}$完成T2、T3更新
+● 备选拍卖方$j_{auc}^{backup}$同步接收更新
+● 保证故障时可从最近状态恢复
+
+3.17 静态定价
+3.17.1 定价目的
+● 用户付费结算
+● 反映资源真实成本
+● 激励稳定方案选择
+3.17.2 基础价格
+$P_{base}(l, j) = c_{edge} \cdot C_i^{edge}(l) + c_{cloud} \cdot C_i^{cloud}(l) + c_{energy} \cdot E_i^{total}(l,j) + c_{trans} \cdot D_i^{trans}(l)$
+成本系数：
+系数	值	说明
+$c_{edge}$	0.01元/GFLOPS	边缘计算成本
+$c_{cloud}$	0.005元/GFLOPS	云端计算成本
+$c_{energy}$	0.05元/kJ	能量成本
+$c_{trans}$	0.001元/MB	传输成本
+3.17.3 模型加载成本
+$P_{model}(j) = \begin{cases}
+c_{load} & \text{if 需要新加载模型} \\
+0 & \text{otherwise}
+\end{cases}$
+推荐$c{load} = 0.5$元_
+3.17.4 自由能折扣
+$\lambda^{discount} = \exp\left(-\frac{\tilde{F}(l,j)}{\tilde{F}_{threshold}}\right)$
+低风险方案获得价格折扣，激励稳定选择。
+3.17.5 供需调节
+$\beta_{supply} = \begin{cases}
+0.2 & \text{if } f_j^{avail}/f_j^{max} < 0.3 \\
+0.1 & \text{if } 0.3 \leq f_j^{avail}/f_j^{max} < 0.5 \\
+0 & \text{otherwise}
+\end{cases}$
+资源紧张时价格上浮。
+3.17.6 最终定价
+$P_{i,l,j} = (P_{base} + P_{model}) \cdot \lambda^{discount} \cdot (1 + \beta_{supply}) + x_{cp} \cdot P_{checkpoint}$
+其中Checkpoint成本：
+$P_{checkpoint} = c_{storage} \cdot S_i^{checkpoint} + c_{backup} \cdot T_i^{checkpoint}$
+
+3.18 对偶间隙分析
+3.18.1 对偶间隙定义
+$Gap = g(\lambda^*, \mu^*, \nu^*, \xi^*, \psi^*, \phi^*) - SW^*$
+3.18.2 间隙上界
+$Gap \leq |\mathcal{U}_{frac}| \cdot \eta_{max}$
+其中$\mathcal{U}_{frac}$为可能出现分数解的用户集合。
+3.18.3 实际影响
+指标	典型值
+$	\mathcal{U}_{frac}
+$Gap/SW^*$	$< 5\%$
+
+3.19 阶段3输出接口
+传递给阶段4的数据
+数据项	符号	说明
+分配矩阵	$\hat{x}$	中标方案标识
+接受任务集	$\mathcal{U}_{accepted}$	成功分配的用户
+拒绝任务集	$\mathcal{U}_{rejected}$	未能分配的用户
+任务-UAV-切分层映射	$\{(i, l_i^*, j_i^*)\}$	执行配置
+资源分配	$\{f_{i,j}^*, f_{c,i}^*\}$	算力分配（来自阶段2凸优化）
+信道分配	$\{s_i^*\}$	信道分配
+Checkpoint配置	$\{(x_{cp,i}, l_{cp,i})\}$	备份配置
+对偶变量	$(\lambda^*, \mu^*, \nu^*, \xi^*, \psi^*, \phi^*)$	资源价格
+用户定价	$\{P_{i,l,j}\}$	付费金额
+各UAV模型加载状态	$\{LoadedModels_j\}$	已加载模型集
+资源更新（T2）	$\{f_j^{allocated}, E_j^{allocated}\}$	已分配资源量
+价格更新（T3）	$\{P_j^{comp,new}, P_j^{energy,new}, P_s^{new}\}$	新价格
+性能指标
+指标	公式
+社会福利	$SW = \sum_{accepted} \eta^{final}$
+任务接受率	$AcceptRate = \frac{
+高优先级接受率	$AcceptRate_{high} = \frac{
+UAV算力利用率	$Util_j^{compute} = \frac{f_j^{allocated}}{f_j^{avail}}$
+云端利用率	$Util^{cloud} = \frac{F_c^{allocated}}{F_c}$
+
+3.20 与前后阶段的衔接
+← 来自阶段1
+数据项	用途
+优先级$\omega_i$	乘入最终效用
+任务分类	差异化约束C1a/C1b
+拍卖方$j_{auc}$	执行对偶迭代与贪心恢复
+← 来自阶段2
+数据项	用途
+投标集$\{\mathcal{B}_i\}$	拍卖输入
+自由能$\tilde{F}$	计算指数衰减系数
+效用$\eta^{stage2}$	计算最终效用
+最优算力$(f_{i,j}^*, f_{c,i}^*)$	约束检查
+效用融合公式：
+$\eta_{i,l,j}^{final} = \omega_i \cdot \eta_{i,l,j}^{stage2} \cdot \exp\left(-\frac{\tilde{F}(l,j)}{\tilde{F}_{threshold}}\right)$
+→ 传递给阶段4
+数据项	阶段4用途
+分配结果	执行任务的配置
+Checkpoint配置	运行时备份位置
+对偶变量/价格	动态定价的初始值
+模型加载状态	减少重复加载
+资源更新T2/T3	运行时资源状态
+→ 反馈给阶段2（下一轮闭环）
+数据项	阶段2用途
+对偶变量	转化为价格信号
+利用率	引导下一轮投标生成
+价格更新T3	引导UAV选择
+
+3.21 计算复杂度分析
+环节	复杂度	说明
+单次子问题求解	$O(	\mathcal{L}_i
+单次迭代	$O(M \cdot	\mathcal{L}
+次梯度计算	$O(M \cdot K)$	汇总决策
+总迭代复杂度	$O(T_{iter} \cdot M \cdot	\mathcal{L}
+贪心恢复	$O(6 \cdot M \cdot K)$	6策略×用户×投标
+时间预算：$T_{auction} \leq 100$ms
+注：大规模场景可能需要优化，如减少迭代次数或并行计算
+
+3.22 本阶段关键设计决策
+决策	选择	理由
+优化目标	社会福利最大化	系统整体效用
+效用融合	指数衰减	主动推理与拍卖统一
+高优先级约束	强制服务（$=1$）	保障关键任务
+约束松弛	软约束+云端兜底	保证可行性
+求解方法	拉格朗日对偶分解	分布式、可扩展
+可行性恢复	六策略贪心	提高解质量
+新增约束	瞬时功率C8	物理可行性
+定价机制	基础成本+折扣+调节	激励相容
+资源更新	T2/T3显式更新	支持多拍卖方协调
+
+3.23 待确认细节
+项目	当前状态	说明
+模型加载约束$M_j^{max}$	3-5个	需根据UAV内存确定
+成本系数$(c{edge}, c_{cloud}, c_{energy}, c_{trans}, c_{load})$	见3.17.2	需根据实际运营确定
+次梯度法参数$(\epsilon_0, T{max}, \epsilon_{tol})$	0.5/100/$10^{-4}$	可根据收敛性调整
+惩罚系数$M_{penalty}$	100	需足够大
+多策略贪心是否需要全部6种	6种	可根据性能精简
+对偶间隙可接受范围	$<5\%$	需根据应用确定
+功率预算$P_j^{comp,budget}$计算方式	$(P^{max}-P^{hover}) \cdot T_{window}$	需确认时间窗口
+
+3.24 阶段3流程图
+来自阶段1：优先级ω_i、任务分类、拍卖方
+来自阶段2：投标集B_i、效用η^stage2、自由能F̃
+              ↓
+┌─────────────────────────────────────┐
+│          QoS预处理                   │
+│  剔除时延超限方案，强制Checkpoint    │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│        最终效用计算                  │
+│  η^final = ω × η^stage2 × exp(-F̃)  │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│      拉格朗日对偶分解                │
+│  ┌─────────────────────────────┐    │
+│  │ 初始化对偶变量λ,μ,ν,ξ,ψ,φ=0 │    │
+│  └─────────────────────────────┘    │
+│              ↓                       │
+│  ┌─────────────────────────────┐    │
+│  │ 迭代 t = 0,1,...,T_max      │    │
+│  │  - 广播对偶变量              │    │
+│  │  - 用户并行求解子问题        │    │
+│  │  - 拍卖方计算次梯度          │    │
+│  │  - 更新对偶变量              │    │
+│  │  - 检查收敛                  │    │
+│  └─────────────────────────────┘    │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│       多策略贪心恢复                 │
+│  6种排序策略，选择SW最大者          │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         静态定价                     │
+│  P = (P_base + P_model) × 折扣 × 调节│
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│      资源信息更新T2、T3              │
+│  T2: 更新已分配资源                  │
+│  T3: 广播价格更新                    │
+└─────────────────────────────────────┘
+              ↓
+输出：分配结果、对偶变量、价格 → 阶段4
+      价格反馈 → 阶段2（下一轮）
+
+
+
+
+阶段4：执行调度与运行时管理（完整整理）
+
+4.1 阶段目标
+1. 执行阶段3分配的任务，管理传输、计算、Checkpoint流程
+2. 实时跟踪能耗与功率，确保物理约束满足
+3. 动态监控系统状态，生成价格信号反馈
+4. 处理UAV故障，实现任务迁移与恢复
+5. 定期调整UAV位置，适应用户分布变化
+6. 完成资源信息更新T4，形成闭环反馈给阶段2
+核心机制：动态定价 + 层边界Checkpoint + 故障迁移 + 位置重定位 + 多拍卖方协调
+
+4.2 输入数据
+来自阶段1
+数据项	符号	用途
+任务优先级	$\{\omega_i\}$	运行时动态优先级计算
+备选拍卖方	$j_{auc}^{backup}$	主拍卖方故障时接管
+来自阶段2
+数据项	符号	用途
+自由能	$\{\tilde{F}(l,j)\}$	运行时风险监控
+Checkpoint配置	$\{(x_{cp,i}, l_{cp,i})\}$	执行时Checkpoint位置
+最优算力分配	$\{(f_{i,j}^*, f_{c,i}^*)\}$	执行时资源分配
+来自阶段3
+数据项	符号	用途
+分配矩阵	$\hat{x}$	确定执行方案
+接受任务集	$\mathcal{U}_{accepted}$	待执行任务
+任务配置	$\{(i, l_i^*, j_i^*, f_{i,j}^*, f_{c,i}^*, s_i^*)\}$	执行参数
+对偶变量	$(\lambda^*, \mu^*, \nu^*, \xi^*, \psi^*, \phi^*)$	价格初始值
+模型加载状态	$\{LoadedModels_j\}$	减少重复加载
+资源更新T2/T3	$\{f_j^{allocated}, E_j^{allocated}, P_j^{new}\}$	初始资源状态
+来自阶段0
+数据项	符号	用途
+平均服务距离	$\bar{d}_{service}$	重定位触发基准
+DNN模型库	$\{LayerProfile_m\}$	Checkpoint数据量计算
+UAV初始状态	$\{State_j\}$	运行时监控初始值
+
+4.3 任务状态管理
+4.3.1 任务状态定义
+$State_i \in \{QUEUED, TRANSMITTING, COMPUTING, CHECKPOINTING, COMPLETED, FAILED\}$
+4.3.2 状态转移图
+QUEUED → TRANSMITTING → COMPUTING ←→ CHECKPOINTING
+                            ↓
+                        COMPLETED
+            ↓ (故障)        ↓ (故障)
+          FAILED ←←←←←←←← FAILED
+4.3.3 状态说明
+状态	含义	触发条件
+QUEUED	等待执行	初始状态
+TRANSMITTING	数据上传中	信道分配完成
+COMPUTING	边缘计算中	上传完成
+CHECKPOINTING	保存检查点	到达$l_{cp}$层
+COMPLETED	执行完成	计算完成并返回结果
+FAILED	执行失败	超时或UAV故障
+4.3.4 运行时动态优先级
+$Priority_i^{runtime}(t) = w_1 \cdot \omega_i + w_2 \cdot \frac{\tau_i^{max} - t_{elapsed}}{\tau_i^{max}} + w_3 \cdot (1 - \gamma_{i,l,j})$
+权重设置：
+权重	值	说明
+$w_1$	0.4	任务固有优先级（来自阶段1）
+$w_2$	0.4	剩余时间紧迫度（动态变化）
+$w_3$	0.2	执行可靠性（来自阶段2风险因子）
+4.3.5 优先级类型对比
+优先级类型	符号	计算时机	是否随时间变化
+任务固有优先级	$\omega_i$	阶段1	否
+运行时动态优先级	$Priority_i^{runtime}$	阶段4实时	是
+
+4.4 执行调度流程
+4.4.1 传输阶段
+传输进度跟踪：
+$D_i^{transmitted}(t + \Delta t) = D_i^{transmitted}(t) + R_{i,j}(t) \cdot \Delta t$
+传输完成条件：
+$D_i^{transmitted} \geq InputSize_i$
+传输完成时刻：
+$T_i^{trans,end} = T_i^{trans,start} + \frac{InputSize_i}{R_{i,j}}$
+4.4.2 边缘计算阶段
+计算进度跟踪：
+$C_i^{computed}(t + \Delta t) = C_i^{computed}(t) + f_{i,j}^*(t) \cdot \Delta t$
+边缘计算完成条件：
+$C_i^{computed} \geq C_i^{edge}(l_i^*)$
+边缘计算完成时刻：
+$T_i^{edge,end} = T_i^{edge,start} + \frac{C_i^{edge}(l_i^*)}{f_{i,j}^*}$
+4.4.3 中继传输阶段（协作模式）
+中继传输完成时刻：
+$T_i^{relay,end} = T_i^{edge,end} + \frac{D_i^{trans}(l_i^*)}{R_{backhaul}}$
+4.4.4 云端计算阶段
+云端计算完成时刻：
+$T_i^{cloud,end} = T_i^{relay,end} + \frac{C_i^{cloud}(l_i^*)}{f_{c,i}^*}$
+4.4.5 结果返回阶段
+返回完成时刻：
+$T_i^{return,end} = T_i^{cloud,end} + \frac{OutputSize_L}{R_{backhaul}} + \frac{OutputSize_L}{R_{i,j}}$
+对于全边缘模式（$l_i^* = L$）：
+$T_i^{return,end} = T_i^{edge,end} + \frac{OutputSize_L}{R_{i,j}}$
+4.4.6 任务总完成时刻
+$T_i^{finish} = T_i^{return,end}$
+4.4.7 执行时序图
+时间轴（串行执行）：
+|--上传--|--边缘计算(1~l层)--|--中继传输--|--云端计算(l+1~L层)--|--返回--|
+    ↑            ↑                ↑                ↑              ↑
+ T_upload    T_edge(l)        T_trans(l)       T_cloud(l)     T_return
+                 |
+           (可选)Checkpoint
+
+4.5 层边界Checkpoint管理
+4.5.1 Checkpoint触发条件
+$Trigger_{cp} = (x_{cp,i} = 1) \land (CurrentLayer \geq l_{cp,i})$
+其中$CurrentLayer$为当前计算到达的层。
+4.5.2 Checkpoint理论依据
+定理回顾（来自阶段2）：
+Checkpoint有益当且仅当：
+$p_{fail} > p_{threshold} = \frac{\gamma_{cp} \cdot OutputSize_{l_{cp}}}{\Delta T_{recovery}^{cp=0} - \Delta T_{recovery}^{cp=1}}$
+阶段2已基于此理论阈值决定$x_{cp,i}$，阶段4按配置执行。
+4.5.3 Checkpoint数据内容
+$S_i^{checkpoint}(l_{cp}) = OutputSize_{l_{cp}} + S_{metadata}$
+组成	说明
+$OutputSize_{l_{cp}}$	第$l_{cp}$层输出特征图大小
+$S_{metadata}$	元数据，约1KB
+4.5.4 Checkpoint执行流程
+1. 暂停计算任务
+2. 序列化第$l_{cp}$层输出特征图
+3. 写入本地存储
+4. （可选）传输到备份节点
+5. 恢复计算任务
+4.5.5 Checkpoint时间开销
+$T_{cp,exec} = \gamma_{cp} \cdot OutputSize_{l_{cp}}$
+推荐$\gamma{cp} = 0.1$ s/MB_
+4.5.6 Checkpoint能耗
+$E_{cp} = P^{write} \cdot T_{cp,exec}$
+推荐$P^{write} = 7$W
+4.5.7 Checkpoint存储管理
+存储位置选择：
+优先级	位置	条件
+1	本地存储	$S_i^{checkpoint} < S_{local,avail}$
+2	邻近UAV	$\exists j': d_{j,j'} < d_{safe} \land H_{j'} > 0.5$
+3	云端存储	其他情况
+清理策略：任务完成后删除对应Checkpoint。
+
+4.6 能耗跟踪【修正】
+4.6.1 瞬时功耗
+$P_j^{total}(t) = P_j^{comp}(t) + P_j^{comm}(t) + P_j^{hover}$
+计算功耗（使用凸优化最优解）：
+$P_j^{comp}(t) = \sum_{i \in Q_j^{active}(t)} \kappa_{edge} \cdot (f_{i,j}^*)^3$
+通信功耗：
+$P_j^{comm}(t) = P^{rx} \cdot N_j^{receiving}(t) + P^{tx} \cdot N_j^{transmitting}(t)$
+悬停功耗：
+$P_j^{hover} \approx 100\text{-}200 \text{W}$
+4.6.2 功率典型值
+分量	公式	典型值
+计算功率	$\sum_i \kappa_{edge}(f_{i,j}^*)^3$	0-50W
+通信功率	$P^{rx} + P^{tx}$	0.6W
+悬停功率	$P_j^{hover}$	100-200W
+总功率上限	$P_j^{max}$	300W
+4.6.3 功率约束监控【新增】
+$\text{若 } P_j^{comp}(t) > P_j^{comp,max} \text{ 则触发告警}$
+其中$P_j^{comp,max} = P_j^{max} - P_j^{hover} - P_j^{comm}$
+4.6.4 累计能耗
+$E_j^{consumed}(t) = \int_0^t P_j^{total}(\tau) d\tau$
+离散近似：
+$E_j^{consumed}(t + \Delta t) = E_j^{consumed}(t) + P_j^{total}(t) \cdot \Delta t$
+4.6.5 剩余能量
+$E_j^{remain}(t) = E_j^{max} - E_j^{consumed}(t)$
+4.6.6 能量告警阈值
+阈值类型	公式	触发动作
+警告阈值	$E_j^{warning} = 0.2 \cdot E_j^{max}$	降低新任务接入权重
+临界阈值	$E_j^{critical} = 0.1 \cdot E_j^{max}$	准备任务迁移
+紧急阈值	$E_j^{emergency} = 0.05 \cdot E_j^{max}$	立即迁移所有任务
+4.6.7 云端能耗跟踪（系统分析用）
+$E_{cloud}^{consumed}(t) = \sum_{i \in completed} \kappa_{cloud} \cdot (f_{c,i}^*)^2 \cdot C_i^{cloud}$
+4.6.8 系统总能耗
+$E_{system}(t) = \sum_{j \in \mathcal{N}} E_j^{consumed}(t) + E_{cloud}^{consumed}(t)$
+
+4.7 动态定价机制
+4.7.1 定价目标
+通过价格信号引导资源高效利用，实现供需平衡：
+$\min_{P} \sum_{j \in \mathcal{N}} (Util_j - Util_{target})^2$
+推荐$Util{target} = 0.7$_
+4.7.2 算力价格更新
+当前利用率：
+$Util_j^{compute}(t) = \frac{\sum_{i \in Q_j^{active}(t)} f_{i,j}^*}{f_j^{max}}$
+利用率偏差：
+$\Delta_j = Util_j^{compute} - Util_{target}$
+价格调整因子：
+$\alpha_j = Clip(\gamma_{comp} \cdot \Delta_j, -0.3, 0.5)$
+推荐$\gamma{comp} = 1.0$_
+平滑更新：
+$P_j^{comp,new} = P_j^{comp,old} \cdot (1 + \lambda_{smooth} \cdot \alpha_j + (1 - \lambda_{smooth}) \cdot \alpha_j^{prev})$
+推荐$\lambda{smooth} = 0.3$_
+价格边界：
+$P_j^{comp,new} = Clip(P_j^{comp,new}, 0.5 \cdot c_j^{base}, 3.0 \cdot c_j^{base})$
+4.7.3 能量价格更新
+能量剩余比例：
+$r_j^{energy} = \frac{E_j^{remain}}{E_j^{max}}$
+价格更新：
+$P_j^{energy,new} = P_j^{energy,old} \cdot (1 + \gamma_{energy} \cdot (0.5 - r_j^{energy}))$
+推荐$\gamma{energy} = 0.3$_
+调节逻辑：
+● $r_j^{energy} < 0.5$：能量不足，涨价
+● $r_j^{energy} > 0.5$：能量充足，降价
+4.7.4 信道价格更新
+信道使用状态：
+$u_s = \begin{cases} 1 & \text{信道}s\text{正在使用} \\ 0 & \text{otherwise} \end{cases}$
+价格更新：
+$P_s^{new} = \begin{cases}
+P_s \cdot (1 + \gamma_{channel}^{up}) & \text{if } u_s = 1 \\
+P_s \cdot (1 - \gamma_{channel}^{down}) & \text{if } u_s = 0
+\end{cases}$
+推荐$\gamma{channel}{up} = 0.2$，$\gamma_{channel}{down} = 0.1$_
+4.7.5 模型加载价格更新
+$P_{j,m}^{load,new} = \begin{cases}
+P_{j,m}^{load} \cdot 0.8 & \text{if } m \in LoadedModels_j \text{（已加载，降价）} \\
+P_{j,m}^{load} \cdot 1.2 & \text{otherwise（需加载，涨价）}
+\end{cases}$
+
+4.8 健康度监控
+4.8.1 综合健康度
+$H_j = w_E \cdot H_j^{energy} + w_L \cdot H_j^{load} + w_C \cdot H_j^{comm}$
+权重设置：
+权重	值	说明
+$w_E$	0.5	能量健康度权重最高
+$w_L$	0.3	负载健康度
+$w_C$	0.2	通信健康度
+4.8.2 健康度分量
+能量健康度：
+$H_j^{energy} = \frac{E_j^{remain}}{E_j^{max}}$
+负载健康度（实时）：
+$H_j^{load}(t) = 1 - \frac{\sum_{i \in Q_j^{active}(t)} f_{i,j}^*}{f_j^{max}}$
+通信健康度：
+$H_j^{comm} = \begin{cases}
+1 & \text{if } Q_j = \emptyset \\[5pt]
+\dfrac{1}{|Q_j|} \sum_{i \in Q_j} \min\left(1, \dfrac{R_{i,j}}{R_{min}}\right) & \text{otherwise}
+\end{cases}$
+4.8.3 状态分级
+健康度范围	状态	处理措施
+$H_j \geq 0.7$	HEALTHY	正常运行
+$0.5 \leq H_j < 0.7$	WARNING	降低新任务分配权重
+$0.3 \leq H_j < 0.5$	CRITICAL	停止接受新任务，准备迁移
+$H_j < 0.3$	FAILED	立即触发故障切换
+
+4.9 故障检测与处理
+4.9.1 故障检测
+心跳检测：
+$Alive_j(t) = \begin{cases}
+1 & \text{if } t - t_j^{last\_heartbeat} \leq T_{heartbeat}^{timeout} \\
+0 & \text{otherwise}
+\end{cases}$
+推荐$T{heartbeat}^{timeout} = 5$秒_
+综合故障判定：
+$Fault_j = (Alive_j = 0) \lor (H_j < 0.3) \lor (E_j^{remain} < E_j^{emergency})$
+4.9.2 备用UAV选择
+候选集合：
+$\mathcal{N}_{backup}(i) = \{j \in \mathcal{N} \setminus \{j_{fail}\} : H_j > 0.5 \land R_{i,j} \geq R_{min} \land f_j^{avail} \geq f_i^{required}\}$
+备用UAV评分：
+$S_j^{backup}(i) = \alpha_1 \cdot H_j + \alpha_2 \cdot \frac{R_{i,j}}{R_{max}} + \alpha_3 \cdot \frac{f_j^{avail}}{f_j^{max}} + \alpha_4 \cdot \frac{E_j^{remain}}{E_j^{max}}$
+权重设置：
+权重	值	说明
+$\alpha_1$	0.35	健康度优先
+$\alpha_2$	0.25	通信质量
+$\alpha_3$	0.20	算力可用性
+$\alpha_4$	0.20	能量储备
+最优备用UAV：
+$j_{backup}^*(i) = \arg\max_{j \in \mathcal{N}_{backup}(i)} S_j^{backup}(i)$
+4.9.3 任务迁移模型
+迁移总时延：
+$T_i^{migrate} = T_i^{handshake} + T_i^{state\_transfer} + T_i^{reconnect} + T_i^{warmup}$
+各分量：
+分量	公式	典型值
+握手时延	$T_i^{handshake} = RTT + T_{auth}$	$\approx 0.1$s
+状态传输	见下文	取决于Checkpoint
+重连时间	$T_i^{reconnect} = T_{channel} + T_{sync}$	$\approx 0.2$s
+预热时间	$T_i^{warmup} = \xi \cdot \frac{C_i^{remaining}}{f_{j_{backup}}}$	$\xi \in [0.1, 0.2]$
+状态传输时间：
+$T_i^{state\_transfer} = \begin{cases}
+\dfrac{OutputSize_{l_{cp}}}{R_{j_{fail}, j_{backup}}} & \text{有CP且原UAV可达} \\[10pt]
+\dfrac{OutputSize_{l_{cp}}}{R_{storage}} & \text{有CP且从存储恢复} \\[10pt]
+0 & \text{无CP（需重新执行）}
+\end{cases}$
+4.9.4 恢复时延对比
+有Checkpoint恢复：
+$\Delta T_{recovery}^{cp=1} = T_i^{migrate} + \frac{C_i^{edge}(l_i^*) - C_i^{edge}(l_{cp})}{f_{j_{backup}}}$
+仅需计算$l_{cp}$到$l_i^*$之间的层。
+无Checkpoint恢复（重新执行）：
+$\Delta T_{recovery}^{cp=0} = T_i^{upload} + T_i^{edge} + T_i^{trans} + T_i^{cloud} + T_i^{return}$
+需要完全重新执行。
+恢复时延节省：
+$Savings = \Delta T_{recovery}^{cp=0} - \Delta T_{recovery}^{cp=1}$
+4.9.5 迁移可行性判断
+$Migrate\_Feasible_i = (T_i^{remaining} > T_i^{migrate} + T_i^{compute\_remaining}) \land (T_i^{remaining} > 0)$
+其中剩余时间：
+$T_i^{remaining} = \tau_i^{max} - (t - T_i^{start})$
+4.9.6 故障切换流程
+1. 检测到UAV $j_{fail}$故障
+2. 识别受影响任务集：
+$Tasks_{fail} = \{i : \pi(i) = j_{fail} \land State_i \notin \{COMPLETED, FAILED\}\}$
+3. 按优先级$\omega_i$降序排列受影响任务
+4. 对每个任务：
+  ○ 筛选可行备用UAV
+  ○ 选择评分最高者
+  ○ 有Checkpoint：从断点恢复
+  ○ 无Checkpoint：重新执行或标记失败
+5. 释放故障UAV资源
+6. 通知拍卖方更新状态
+
+4.10 多拍卖方协调【新增】
+4.10.1 主/备拍卖方机制
+● 主拍卖方$j_{auc}^{primary}$：正常情况下负责所有协调工作
+● 备选拍卖方$j_{auc}^{backup}$：实时同步状态，故障时接管
+4.10.2 状态同步
+备选拍卖方同步接收：
+● T2更新：已分配资源量
+● T3更新：价格信息
+● 任务状态变化
+4.10.3 故障接管流程
+1. 检测到主拍卖方$j_{auc}^{primary}$故障
+2. 备选拍卖方$j_{auc}^{backup}$广播接管消息
+3. 从最近同步点恢复状态
+4. 继续执行调度与定价
+5. 选举新的备选拍卖方
+4.10.4 大规模场景扩展
+对于大规模系统，可采用区域划分：
+$\mathcal{U}_k = \{i \in \mathcal{U} : \arg\min_j d_{i,j} \in Region_k\}$
+每个区域有独立的主/备拍卖方，通过跨区域资源协调实现全局优化。
+
+4.11 UAV位置动态调整
+4.11.1 触发条件
+位置失效指标：
+$Mismatch(t) = \frac{1}{M} \sum_{i \in \mathcal{U}} \min_{j \in \mathcal{N}} d_{i,j}(t) - \bar{d}_{service}^{init}$
+触发规则：
+$Trigger_{reposition} = (Mismatch(t) > \delta_{pos} \cdot \bar{d}_{service}^{init})$
+推荐$\delta{pos} = 0.3$_
+备选触发：固定周期触发，如每$T_{reposition}$秒执行一次
+4.11.2 重定位目标
+复用阶段0的加权K-means，但权重动态更新：
+$w_i(t) = \alpha_1 \cdot \frac{C_i}{\tau_i^{max}} + \alpha_2 \cdot \frac{InputSize_i}{InputSize_{max}} + \alpha_3 \cdot \mathbb{1}(i \in \mathcal{U}_{active})$
+新增$\alpha_3$项使活跃用户获得更高权重。
+4.11.3 移动约束
+能量约束：
+$E_j^{fly}(P_j^{old} \to P_j^{new}) \leq E_j^{remain} - E_j^{reserve}$
+飞行能耗：
+$E_j^{fly} = P^{fly} \cdot \frac{\|P_j^{new} - P_j^{old}\|}{v_{fly}}$
+典型值：$P^{fly} = 200$W，$v{fly} = 10$ m/s_
+若能量不足，该UAV保持原位。
+4.11.4 移动期间任务处理
+● 移动中UAV无法服务新任务
+● 已分配任务：若可在移动前完成则继续执行；否则触发迁移
+
+4.12 资源信息更新T4【新增】
+4.12.1 更新时机
+任务执行完成或周期性更新（推荐周期1秒）
+4.12.2 更新内容
+最终资源状态：
+$f_j^{avail,new} = f_j^{max} - \sum_{i \in Q_j^{active}} f_{i,j}^*$
+$E_j^{remain,new} = E_j^{max} - E_j^{consumed}$
+实际占用更新：
+$Actual_j = \{f_j^{used}, E_j^{used}, Channels_j^{used}, Models_j^{loaded}\}$
+4.12.3 更新广播
+各UAV广播T4更新，供下一轮阶段2使用。
+
+4.13 实时监控指标
+4.13.1 系统级指标
+指标	公式	说明
+任务完成率	$CompletionRate(t) = \frac{	{i : State_i = COMPLETED}
+平均响应时延	$\bar{T}_{response}(t) = \frac{1}{	\mathcal{U}_{completed}
+系统吞吐量	$Throughput(t) = \frac{\sum_{i \in \mathcal{U}_{completed}} C_i^{total}}{t}$	计算效率
+故障率	$FailureRate(t) = \frac{	{i : State_i = FAILED}
+4.13.2 UAV级指标
+指标	公式
+算力利用率	$Util_j^{compute}(t) = \frac{\sum_{i \in Q_j^{active}} f_{i,j}^*}{f_j^{max}}$
+能量消耗率	$EnergyRate_j(t) = \frac{E_j^{max} - E_j^{remain}(t)}{t}$
+预计剩余运行时间	$T_j^{remaining} = \frac{E_j^{remain}(t)}{EnergyRate_j(t)}$
+任务处理速度	$TaskRate_j(t) = \frac{
+4.13.3 Checkpoint指标
+指标	公式
+Checkpoint成功率	$CPSuccessRate(t) = \frac{N_{cp,successful}(t)}{N_{cp,attempted}(t)}$
+平均Checkpoint时间	$\bar{T}{cp}(t) = \frac{\sum{cp \in Executed} T_{cp,exec}}{
+恢复成功率	$RecoverySuccessRate(t) = \frac{
+平均恢复时延	$\bar{T}{recovery}(t) = \frac{\sum{i \in \mathcal{U}_{recovered}} T_i^{recovery}}{
+4.13.4 告警机制
+级别	条件	动作
+INFO	正常状态变化	记录日志
+WARNING	$H_j < 0.5$或$E_j < E_{warning}$或$P_j^{comp} > 0.8 P_j^{comp,max}$	降低任务接入
+CRITICAL	$H_j < 0.3$或$E_j < E_{critical}$	触发故障切换
+
+4.14 价格反馈接口（闭环至阶段2）
+4.14.1 反馈数据结构
+$PriceFeedback = \{P^{comp}, P^{energy}, P^{channel}, P^{load}, Util, Health, Models, timestamp\}$
+详细字段：
+字段	内容	说明
+compute_prices	$\{P_j^{comp,new}\}_{j \in \mathcal{N}}$	各UAV算力价格
+energy_prices	$\{P_j^{energy,new}\}_{j \in \mathcal{N}}$	各UAV能量价格
+channel_prices	$\{P_s^{new}\}_{s \in \mathcal{S}}$	各信道价格
+model_prices	$\{P_{j,m}^{load}\}$	模型加载价格
+utilization	$\{Util_j\}_{j \in \mathcal{N}}$	各UAV利用率
+health_status	$\{H_j, Status_j\}_{j \in \mathcal{N}}$	健康状态
+loaded_models	$\{LoadedModels_j\}_{j \in \mathcal{N}}$	已加载模型
+timestamp	$t_{feedback}$	反馈时间戳
+4.14.2 反馈周期
+$T_{feedback} = \max(T_{min}, \frac{1}{TaskArrivalRate})$
+推荐$T{min} = 1$秒_
+4.14.3 反馈应用（阶段2）
+在阶段2投标生成时，根据价格反馈调整采样概率：
+$P(j | PriceFeedback) \propto \frac{1}{P_j^{comp}} \cdot \frac{1}{d_{i,j}^2} \cdot (1 - Util_j) \cdot \mathbb{1}(m_i \in LoadedModels_j)$
+调整逻辑：
+● 价格高的UAV被选中概率降低
+● 距离远的UAV被选中概率降低
+● 负载重的UAV被选中概率降低
+● 已加载所需模型的UAV被选中概率提高
+
+4.15 阶段4输出接口
+执行结果输出
+数据项	说明
+完成任务集	$\mathcal{U}_{completed}$
+失败任务集	$\mathcal{U}_{failed}$
+各任务执行详情	$(T_i^{actual}, E_i^{actual}, recovered?, cp\_used?)$
+性能统计输出
+数据项	说明
+平均时延	$\bar{T}_{response}$
+系统总能耗	$E_{system} = \sum_j E_j^{consumed} + E_{cloud}^{consumed}$
+完成率	$CompletionRate$
+高优先级完成率	$CompletionRate_{high}$
+Checkpoint统计	执行次数、恢复成功率、平均恢复时延
+传递给下一轮阶段2的反馈（闭环）
+数据项	符号	用途
+价格反馈	$PriceFeedback$	引导投标生成
+UAV状态	$\{f_j^{avail}, E_j^{remain}, H_j\}$	可行性判断
+模型加载状态	$\{LoadedModels_j\}$	模型热度引导
+位置更新	$\{P_j^{new}\}$（若重定位）	距离计算更新
+资源更新T4	$\{f_j^{avail,new}, E_j^{remain,new}\}$	最新资源状态
+
+4.16 与前后阶段的衔接
+← 来自阶段0
+数据项	用途
+服务距离基准$\bar{d}_{service}$	重定位触发判断
+DNN模型库$\{LayerProfile_m\}$	Checkpoint数据量计算
+UAV初始状态$\{State_j\}$	运行时监控初始值
+← 来自阶段1
+数据项	用途
+优先级$\omega_i$	运行时动态优先级计算
+备选拍卖方$j_{auc}^{backup}$	主拍卖方故障时接管
+公式衔接：
+$Priority_i^{runtime}(t) = 0.4 \cdot \omega_i + 0.4 \cdot \frac{\tau_i^{max} - t_{elapsed}}{\tau_i^{max}} + 0.2 \cdot (1 - \gamma_{i,l,j})$
+← 来自阶段2
+数据项	用途
+自由能$\tilde{F}$	运行时风险监控
+Checkpoint配置$(x_{cp}, l_{cp})$	执行时保存断点
+最优算力$(f_{i,j}^*, f_{c,i}^*)$	执行时资源分配、能耗计算
+← 来自阶段3
+数据项	用途
+分配结果$\hat{x}$	执行任务的配置
+对偶变量	动态定价的初始值
+资源更新T2/T3	初始资源状态与价格
+模型加载状态	减少重复加载
+→ 反馈给阶段2（闭环）
+数据项	阶段2用途
+价格信号$PriceFeedback$	引导UAV选择，避免拥塞
+资源状态	更新可行性判断
+模型热度$LoadedModels_j$	引导模型复用
+位置更新$P_j^{new}$	更新距离计算
+闭环示意
+阶段0 → 阶段1 → 阶段2 → 阶段3 → 阶段4
+  ↑                              ↓
+  └───────── 下一轮 ←────────────┘
+                    PriceFeedback
+                    资源状态T4
+                    模型加载状态
+
+4.17 资源信息四阶段更新汇总
+更新时机	更新内容	更新主体	用途
+T1: 投标生成后	基础资源状态	各UAV广播	阶段3约束检查
+T2: 拍卖决策后	已分配资源累计量	拍卖方计算	资源占用跟踪
+T3: 资源分配更新后	单位资源价格	拍卖方广播	定价信号
+T4: 执行完成后	最终资源占用状态	各UAV本地更新并广播	下一轮阶段2输入
+
+4.18 本阶段关键设计决策
+决策	选择	理由
+Checkpoint位置	DNN层边界	保存完整特征图
+触发条件	理论阈值驱动（阶段2决定）	与风险评估一致
+故障检测	心跳+健康度	双重保障
+迁移策略	评分选择备用	综合考虑多因素
+定价机制	利用率驱动	实现供需平衡
+位置调整	按需触发	避免频繁移动
+多拍卖方	主/备机制	提高系统鲁棒性
+资源更新	四阶段显式更新	清晰的状态管理
+能耗跟踪	使用凸优化最优解	与阶段2/3一致
+
+4.19 待确认细节
+项目	当前状态	说明
+动态定价参数$(\gamma{comp}, \gamma_{energy}, \gamma_{channel}, \lambda_{smooth})$_	1.0/0.3/0.2,0.1/0.3	可根据场景调整
+健康度权重$(w_E, w_L, w_C)$	0.5/0.3/0.2	可根据场景调整
+备用UAV评分权重$(\alpha_1, \alpha_2, \alpha_3, \alpha_4)$	0.35/0.25/0.20/0.20	可根据场景调整
+UAV重定位触发阈值$\delta{pos}$_	0.3	合理范围0.2-0.5
+飞行功耗$P^{fly}$和速度$v{fly}$_	200W/10m/s	需根据UAV型号确定
+价格反馈周期$T{feedback}$_	1秒	与任务到达率相关
+心跳超时$T{heartbeat}^{timeout}$_	5秒	需根据网络条件调整
+运行时优先级权重$(w_1, w_2, w_3)$	0.4/0.4/0.2	可根据场景调整
+
+4.20 阶段4流程图
+来自阶段1：优先级ω_i、备选拍卖方
+来自阶段2：自由能F̃、Checkpoint配置、算力分配
+来自阶段3：分配结果x̂、对偶变量、T2/T3更新
+来自阶段0：服务距离基准、模型库
+              ↓
+┌─────────────────────────────────────┐
+│         任务状态初始化               │
+│  所有接受任务 → QUEUED              │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         执行调度主循环               │
+│  ┌─────────────────────────────┐    │
+│  │ 对每个活跃任务：             │    │
+│  │  - 传输阶段                  │    │
+│  │  - 边缘计算阶段              │    │
+│  │  - Checkpoint（若触发）      │    │
+│  │  - 中继传输                  │    │
+│  │  - 云端计算                  │    │
+│  │  - 结果返回                  │    │
+│  └─────────────────────────────┘    │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         实时监控                     │
+│  - 能耗跟踪（含功率约束）           │
+│  - 健康度计算                       │
+│  - 告警检查                         │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         故障处理                     │
+│  若检测到故障：                     │
+│  - 选择备用UAV                      │
+│  - 任务迁移（有/无Checkpoint）      │
+│  - 多拍卖方协调                     │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         动态定价                     │
+│  更新算力、能量、信道、模型价格     │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         位置调整（若触发）           │
+│  重新执行加权K-means               │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         资源信息更新T4               │
+│  更新并广播最终资源状态             │
+└─────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────┐
+│         生成价格反馈                 │
+│  PriceFeedback → 阶段2（下一轮）    │
+└─────────────────────────────────────┘
+              ↓
+输出：执行结果、性能统计、价格反馈
+
+4.21 计算复杂度分析
+环节	复杂度	说明
+任务状态更新	$O(M)$	遍历所有任务
+能耗跟踪	$O(N)$	遍历所有UAV
+健康度计算	$O(N)$	每UAV常数时间
+故障检测	$O(N)$	心跳检查
+备用UAV选择	$O(N)$	遍历候选
+动态定价	$O(N +	\mathcal{S}
+位置调整	$O(M \cdot N \cdot T_{kmeans})$	仅触发时
+单轮总复杂度	$O(M + N)$	不含位置调整
+时间预算：实时执行，每轮$< 100$ms
+
+阶段4整理完毕。全部五个阶段（阶段0-4）已完整整理。
+
