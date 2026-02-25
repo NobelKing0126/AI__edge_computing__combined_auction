@@ -262,30 +262,30 @@ class TaskTypeConfig:
 LATENCY_SENSITIVE_CONFIG = TaskTypeConfig(
     task_type=TaskType.LATENCY_SENSITIVE,
     model_spec=MOBILENETV2_SPEC,
-    min_images=5,
-    max_images=20,
+    min_images=10,         # ← 修改为10（原5）- 复杂度增加
+    max_images=50,         # ← 修改为50（原20）- 每任务更多图片
     min_deadline=0.5,
     max_deadline=1.5,
     min_priority=0.6,
     max_priority=0.9,
-    description="延迟敏感型任务（MobileNetV2，少量图片，严格deadline）"
+    description="延迟敏感型任务（MobileNetV2，每任务10-50张图片，严格deadline）"
 )
 
 # 计算密集型任务配置
-# VGG16 (MNIST适配): 0.5 GFLOPs/图片 × 20-50张 = 10-25 GFLOPs
+# VGG16 (MNIST适配): 0.5 GFLOPs/图片 × 10-100张 = 5-50 GFLOPs
 # UAV 15 GFLOPS: 0.7-1.7秒计算
 # 云端 30 GFLOPS: 0.3-0.8秒计算
 # deadline设为1.0-3.0秒使云端协同处理有一定失败率
 COMPUTE_INTENSIVE_CONFIG = TaskTypeConfig(
     task_type=TaskType.COMPUTE_INTENSIVE,
     model_spec=VGG16_SPEC,
-    min_images=20,
-    max_images=50,
+    min_images=10,         # ← 修改为10（原20）- 复杂度增加
+    max_images=100,        # ← 修改为100（原50）- 每任务更多图片
     min_deadline=1.0,
     max_deadline=3.0,
     min_priority=0.3,
     max_priority=0.6,
-    description="计算密集型任务（VGG16，中等图片数量，紧凑deadline）"
+    description="计算密集型任务（VGG16，每任务10-100张图片，紧凑deadline）"
 )
 
 
@@ -446,8 +446,70 @@ class MNISTTaskGenerator:
                 task.task_id = batch_id * tasks_per_batch + j
             
             batches.append(tasks)
-        
+
         return batches
+
+    def generate_from_queue(self, task_queue: List[Dict]) -> List[Task]:
+        """
+        从任务队列生成任务列表
+
+        支持动态任务到达（泊松分布），将任务队列中的字典转换为Task对象
+
+        Args:
+            task_queue: 任务队列列表（来自TaskQueueGenerator.get_task_dict()）
+
+        Returns:
+            Task对象列表
+        """
+        tasks = []
+
+        for task_dict in task_queue:
+            # 确定任务类型和配置
+            task_type_str = task_dict.get('task_type', 'latency_sensitive')
+
+            if task_type_str == 'latency_sensitive':
+                config = LATENCY_SENSITIVE_CONFIG
+                task_type = TaskType.LATENCY_SENSITIVE
+            else:
+                config = COMPUTE_INTENSIVE_CONFIG
+                task_type = TaskType.COMPUTE_INTENSIVE
+
+            # 从任务队列中提取参数
+            task_id = task_dict.get('task_id', 0)
+            user_id = task_dict.get('user_id', 0)
+            n_images = task_dict.get('n_images', 10)
+            deadline = task_dict.get('deadline', 1.0)
+            priority = task_dict.get('priority', 0.5)
+            data_size = task_dict.get('data_size', task_dict.get('D', 1e6))
+            total_flops = task_dict.get('total_flops', task_dict.get('C_total', 10e9))
+
+            # 用户位置
+            user_pos = task_dict.get('user_pos', (0, 0))
+            if isinstance(user_pos, (list, tuple)):
+                user_x, user_y = user_pos[0], user_pos[1]
+            else:
+                user_x = user_x_val = task_dict.get('user_x', 0)
+                user_y = task_dict.get('user_y', 0)
+
+            # 创建任务对象
+            task = Task(
+                task_id=task_id,
+                user_id=user_id,
+                task_type=task_type,
+                model_name=config.model_spec.name,
+                n_images=n_images,
+                data_size_bytes=data_size,
+                total_flops=total_flops,
+                deadline=deadline,
+                priority=priority,
+                user_x=user_x,
+                user_y=user_y,
+                model_spec=config.model_spec
+            )
+
+            tasks.append(task)
+
+        return tasks
 
 
 def tasks_to_dict_list(tasks: List[Task]) -> List[Dict]:

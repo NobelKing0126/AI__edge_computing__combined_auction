@@ -35,6 +35,9 @@ from experiments.task_types import (
     MNISTTaskGenerator, Task, TaskType, tasks_to_dict_list, analyze_tasks,
     MOBILENETV2_SPEC, VGG16_SPEC
 )
+from experiments.task_queue_generator import (
+    TaskQueueGenerator, TaskQueueConfig, ArrivedTask
+)
 from experiments.scenario_config import (
     ScenarioConfig, ScenarioType, ExperimentConfig,
     create_small_scale_config, create_large_scale_config,
@@ -463,35 +466,55 @@ class RealExperimentRunnerV9:
     # ============ 实验1: 小规模基线对比 ============
     
     def run_exp1(self) -> Dict:
-        """实验1: 小规模基线对比 - 输出完整32项指标"""
+        """实验1: 小规模基线对比 - 输出完整32项指标（使用任务队列）"""
         print("\n" + "=" * 70)
         print("实验1: 小规模基线对比 (完整32项指标)")
         print("=" * 70)
-        
+
         # 扩大任务规模：30 → 200 (约7倍)，UAV数量相应增加
         scenario = create_small_scale_config(n_uavs=15, n_users=200)
         generator = self._create_task_generator(scenario)
-        tasks = generator.generate_tasks(scenario.n_users, seed=self.seed)
-        
+
+        # 使用任务队列生成器（泊松到达过程）
+        print("\n使用任务队列生成器（泊松到达过程）...")
+        queue_config = TaskQueueConfig(
+            arrival_rate=0.5,      # 任务到达速率 (任务/秒)
+            simulation_time=200.0,   # 仿真总时长 (秒)
+            task_generator=generator,
+            n_users=scenario.n_users,
+            seed=self.seed
+        )
+
+        queue_generator = TaskQueueGenerator(queue_config)
+
+        # 生成任务队列（迭代器）
+        task_queue = queue_generator.generate_task_queue(n_users=scenario.n_users)
+
+        # 将任务队列转换为Task对象列表
+        tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
+
+        # 按到达时间排序（模拟在线算法看到的任务顺序）
+        tasks.sort(key=lambda t: t.task_id)
+
         # 分析任务
         stats = analyze_tasks(tasks)
         print(f"任务统计: {stats['total_tasks']}个任务")
         print(f"  - 延迟敏感型: {stats['latency_sensitive']['count']}个 (60%)")
         print(f"  - 计算密集型: {stats['compute_intensive']['count']}个 (40%)")
-        
+
         task_dicts = tasks_to_dict_list(tasks)
         uav_resources = scenario.get_uav_resources()
         cloud_resources = scenario.get_cloud_resources()
-        
+
         results = {}
-        
+
         # 运行Proposed（带价格追踪）
         print("\n运行 Proposed...")
         proposed_result, price_tracker = self._run_with_price_tracking(
             tasks, scenario, n_batches=25
         )
-        
-        # 计算离线最优
+
+        # 计算离线最优（使用完整任务列表）
         offline_sw = self._compute_offline_optimal_real(task_dicts, uav_resources, cloud_resources)
         
         proposed_metrics = self._extract_full_metrics(proposed_result, offline_sw)
@@ -543,14 +566,28 @@ class RealExperimentRunnerV9:
         
         for n_users in user_counts:
             print(f"\n--- 用户数: {n_users} ---")
-            
+
             scenario = create_small_scale_config(n_uavs=5, n_users=n_users)
             generator = self._create_task_generator(scenario)
-            tasks = generator.generate_tasks(n_users, seed=self.seed + n_users)
+
+            # 使用任务队列生成器（泊松到达过程）
+            queue_config = TaskQueueConfig(
+                arrival_rate=0.5,      # 任务到达速率 (任务/秒)
+                simulation_time=100.0,   # 仿真总时长 (秒)
+                task_generator=generator,
+                n_users=n_users,
+                seed=self.seed + n_users
+            )
+
+            queue_generator = TaskQueueGenerator(queue_config)
+            task_queue = queue_generator.generate_task_queue(n_users=n_users)
+            tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
+            tasks.sort(key=lambda t: t.task_id)
+
             task_dicts = tasks_to_dict_list(tasks)
             uav_resources = scenario.get_uav_resources()
             cloud_resources = scenario.get_cloud_resources()
-            
+
             # 计算离线最优
             offline_sw = self._compute_offline_optimal_real(task_dicts, uav_resources, cloud_resources)
             
@@ -601,14 +638,28 @@ class RealExperimentRunnerV9:
         
         for n_uavs in uav_counts:
             print(f"\n--- UAV数: {n_uavs} ---")
-            
+
             scenario = create_small_scale_config(n_uavs=n_uavs, n_users=n_users)
             generator = self._create_task_generator(scenario)
-            tasks = generator.generate_tasks(n_users, seed=self.seed)
+
+            # 使用任务队列生成器（泊松到达过程）
+            queue_config = TaskQueueConfig(
+                arrival_rate=0.5,      # 任务到达速率 (任务/秒)
+                simulation_time=100.0,   # 仿真总时长 (秒)
+                task_generator=generator,
+                n_users=n_users,
+                seed=self.seed
+            )
+
+            queue_generator = TaskQueueGenerator(queue_config)
+            task_queue = queue_generator.generate_task_queue(n_users=n_users)
+            tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
+            tasks.sort(key=lambda t: t.task_id)
+
             task_dicts = tasks_to_dict_list(tasks)
             uav_resources = scenario.get_uav_resources()
             cloud_resources = scenario.get_cloud_resources()
-            
+
             offline_sw = self._compute_offline_optimal_real(task_dicts, uav_resources, cloud_resources)
             
             for algo in algorithms:
@@ -648,17 +699,18 @@ class RealExperimentRunnerV9:
         print("\n" + "=" * 70)
         print("实验4: 大规模用户扩展")
         print("=" * 70)
-        
+
         user_counts = [50, 80, 100, 150, 200]
         n_uavs = 15
         algorithms = ["Proposed", "Greedy", "Edge-Only", "Cloud-Only"]
-        
+
         results = {algo: [] for algo in algorithms}
-        
+
         for n_users in user_counts:
             print(f"\n--- 用户数: {n_users} ---")
-            
-            scenario = create_large_scale_config(n_uavs=n_uavs, n_users=n_users)
+
+            scenario = create_large_scale_config(n_uavs=n_uavs, n_users=n_users, tasks_per_user=10)
+            generator = self._create_task_generator(scenario)
             generator = self._create_task_generator(scenario)
             tasks = generator.generate_tasks(n_users, seed=self.seed + n_users)
             task_dicts = tasks_to_dict_list(tasks)
@@ -698,17 +750,17 @@ class RealExperimentRunnerV9:
         print("\n" + "=" * 70)
         print("实验5: 大规模UAV扩展")
         print("=" * 70)
-        
+
         uav_counts = [10, 12, 15, 18, 20]
         n_users = 150
         algorithms = ["Proposed", "Greedy", "Edge-Only", "Cloud-Only"]
-        
+
         results = {algo: [] for algo in algorithms}
-        
+
         for n_uavs in uav_counts:
             print(f"\n--- UAV数: {n_uavs} ---")
-            
-            scenario = create_large_scale_config(n_uavs=n_uavs, n_users=n_users)
+
+            scenario = create_large_scale_config(n_uavs=n_uavs, n_users=n_users, tasks_per_user=10)
             generator = self._create_task_generator(scenario)
             tasks = generator.generate_tasks(n_users, seed=self.seed)
             task_dicts = tasks_to_dict_list(tasks)

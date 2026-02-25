@@ -55,6 +55,12 @@ from algorithms.phase3.combinatorial_auction import (
     LagrangianAuction, BidInfo, UAVResource, AuctionResult, AuctionStatus
 )
 
+# 集成 Active Inference 自由能计算模块
+from algorithms.active_inference.state_space import StateVector, RiskLevel
+from algorithms.active_inference.free_energy import (
+    FreeEnergyCalculator, FourComponentCalculator, InstantFreeEnergy
+)
+
 
 class ProposedMethod:
     """
@@ -118,7 +124,15 @@ class ProposedMethod:
         self.dual_iterations = 0
         self.primal_value = 0.0
         self.dual_value = 0.0
-    
+
+        # Active Inference 四分量自由能计算器
+        self.fe_calculator = FourComponentCalculator(
+            w_E=FREE_ENERGY.W_ENERGY,
+            w_T=FREE_ENERGY.W_TIME,
+            w_h=FREE_ENERGY.W_HEALTH,
+            w_p=FREE_ENERGY.W_PROGRESS
+        )
+
     def _reset_tracking(self, n_uavs: int):
         """重置资源跟踪"""
         self.uav_compute_used = {i: 0.0 for i in range(n_uavs)}
@@ -741,10 +755,12 @@ class ProposedMethod:
             # 检查约束
             if T_total > deadline or energy > remaining_energy:
                 continue
-            
-            # 计算效用
+
+            # 计算效用（使用 Active Inference 自由能）
             uav_health = 1.0
-            utility = self._compute_free_energy_utility(task, T_total, uav_health)
+            utility = self._compute_free_energy_utility(task, T_total, uav_health,
+                                                           energy_required=energy,
+                                                           remaining_energy=remaining_energy)
             
             bid = {
                 'uav_id': uav_id,
@@ -849,10 +865,12 @@ class ProposedMethod:
             # 检查约束
             if T_total > deadline or energy > remaining_energy:
                 continue
-            
-            # 计算效用
+
+            # 计算效用（使用 Active Inference 自由能）
             uav_health = 1.0  # 假设健康
-            utility = self._compute_free_energy_utility(task, T_total, uav_health)
+            utility = self._compute_free_energy_utility(task, T_total, uav_health,
+                                                           energy_required=energy,
+                                                           remaining_energy=remaining_energy)
             
             # 更新最优
             if utility > best_result['utility']:
@@ -886,33 +904,98 @@ class ProposedMethod:
             n_concurrent=n_concurrent
         )
         return result['split_ratio'], result['delay']
-    
-    def _compute_free_energy_utility(self, task: Dict, delay: float, 
-                                     uav_health: float = 1.0) -> float:
+
+    def _build_state_vector(self, task: Dict, delay: float, uav_health: float,
+                           remaining_energy: float = None) -> StateVector:
         """
-        计算自由能融合效用
-        
-        使用 FREE_ENERGY 常量中的权重参数，实现主动推理框架
+        构建 StateVector 用于 Active Inference 自由能计算
+
+        Args:
+            task: 任务字典，包含 deadline, priority 等信息
+            delay: 预估执行时延
+            uav_health: UAV健康度 [0,1]
+            remaining_energy: 剩余能量 (J)，可选
+
+        Returns:
+            StateVector: 状态向量
+        """
+        deadline = task.get('deadline', 1.0)
+
+        # 估算任务进度：基于时间比例
+        # 假设理想情况下 delay=deadline 时进度=1
+        T_expected = deadline  # 理想执行时间
+        progress = min(1.0, delay / max(T_expected, NUMERICAL.EPSILON))
+
+        # 距离参数（简化处理，可从UAV位置获取）
+        distance = 800.0  # 默认距离，可根据实际位置计算
+
+        # 不确定性（可根据信道质量动态调整）
+        sigma = 0.1  # 默认不确定性
+
+        # 如果没有提供能量，使用估算值
+        if remaining_energy is None:
+            remaining_energy = 400e3  # 默认 400kJ
+
+        return StateVector(
+            E=remaining_energy,
+            T=delay,
+            h=uav_health,
+            p=progress,
+            d=distance,
+            sigma=sigma
+        )
+
+    def _compute_free_energy_utility(self, task: Dict, delay: float,
+                                     uav_health: float = 1.0,
+                                     energy_required: float = None,
+                                     remaining_energy: float = None) -> float:
+        """
+        计算自由能融合效用 (使用 Active Inference 四分量方法)
+
+        使用四分量自由能公式:
+            F_t = w_E×F_t^energy + w_T×F_t^time + w_h×F_t^health + w_p×F_t^progress
+
+        转换为效用: utility = exp(-F_t) 保持向后兼容
+
+        Args:
+            task: 任务字典，包含 deadline, priority 等信息
+            delay: 预估执行时延
+            uav_health: UAV健康度 [0,1]
+            energy_required: 任务所需能量 (J)，可选
+            remaining_energy: 剩余能量 (J)，可选
+
+        Returns:
+            float: 效用值 [0, 1.5]，值越大越优
         """
         deadline = task.get('deadline', 1.0)
         priority = task.get('priority', 0.5)
-        
-        # 时延效用 (指数衰减) - 使用缩放因子
-        delay_ratio = delay / deadline
-        scale = FREE_ENERGY.SCALE_FACTOR / 5.0  # 归一化
-        time_util = np.exp(-scale * max(0, delay_ratio - 0.7))  # 放宽阈值
-        
-        # 风险评估 - 使用能量惩罚因子
-        risk = 1 - uav_health
-        risk_penalty = np.exp(-FREE_ENERGY.ENERGY_PENALTY * risk) if risk < 0.9 else 0.1
-        
-        # 优先级加权 - 使用自由能权重
-        priority_weight = 1 + FREE_ENERGY.W_FREE * priority * 2
-        
-        # 算力权重加成 (新增)
-        compute_bonus = 1 + FREE_ENERGY.W_COMPUTE * (1 - delay_ratio)
-        
-        utility = time_util * risk_penalty * priority_weight * compute_bonus
+
+        # 默认能量估算
+        if energy_required is None:
+            energy_required = 100e3  # 默认 100kJ
+
+        if remaining_energy is None:
+            remaining_energy = 400e3  # 默认 400kJ
+
+        # 构建状态向量
+        state = self._build_state_vector(task, delay, uav_health, remaining_energy)
+
+        # 计算四分量自由能
+        fe_result = self.fe_calculator.compute_instant_free_energy(
+            state=state,
+            E_required=energy_required,
+            T_remaining_required=max(deadline - delay, NUMERICAL.EPSILON),
+            channel_quality=RESOURCE.DEFAULT_CHANNEL_QUALITY,
+            p_expected=1.0
+        )
+
+        # 将自由能转换为效用（自由能越低，效用越高）
+        # 使用指数变换保持与旧方法相似的值域
+        utility = np.exp(-fe_result.F_total / 10.0)  # 除以10缩放
+
+        # 可选：根据优先级加权
+        utility *= (1 + priority * 0.5)
+
         return utility
     
     def _compute_gini(self, values: list) -> float:
@@ -1973,9 +2056,11 @@ class FullExperimentRunner:
                     
                     # 计算能耗
                     energy = config.energy.kappa_edge * (f_edge ** 2) * C_edge
-                    
-                    # 计算效用
-                    utility = proposed._compute_free_energy_utility(task, T_total, 1.0)
+
+                    # 计算效用（使用 Active Inference 自由能）
+                    utility = proposed._compute_free_energy_utility(task, T_total, 1.0,
+                                                                   energy_required=energy,
+                                                                   remaining_energy=uav_energy_max[uav_id])
                     
                     options.append((uav_id, split_layer, utility, energy, C_edge))
             
