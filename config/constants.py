@@ -31,18 +31,23 @@ class NumericalConstants:
 class FreeEnergyConstants:
     """
     自由能计算常量
-    
+
     用于主动推理框架中的自由能计算
     """
     SCALE_FACTOR: float = 5.0       # 自由能缩放因子 (降低惩罚提升成功率)
     MAX_FREE_ENERGY: float = 100.0  # 自由能上界
     ENERGY_PENALTY: float = 3.0     # 能量不足惩罚因子 (降低)
-    
+
     # 自由能风险权重 (更重视算力和时延)
     W_FREE: float = 0.30            # 自由能权重 (降低)
     W_ENERGY: float = 0.20          # 能量风险权重
     W_CHANNEL: float = 0.20         # 信道风险权重
     W_COMPUTE: float = 0.30         # 算力风险权重 (提升)
+
+    # 四分量自由能权重 (Active Inference)
+    W_TIME: float = 0.25            # 时间维度权重
+    W_HEALTH: float = 0.15           # 健康维度权重
+    W_PROGRESS: float = 0.20          # 进度维度权重
 
 
 @dataclass(frozen=True)

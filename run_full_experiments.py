@@ -56,7 +56,7 @@ from algorithms.phase3.combinatorial_auction import (
 )
 
 # 集成 Active Inference 自由能计算模块
-from algorithms.active_inference.state_space import StateVector, RiskLevel
+from algorithms.active_inference.state_space import StateVector
 from algorithms.active_inference.free_energy import (
     FreeEnergyCalculator, FourComponentCalculator, InstantFreeEnergy
 )
