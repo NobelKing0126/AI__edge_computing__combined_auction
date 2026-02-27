@@ -36,7 +36,7 @@ class UAVParams:
         M_max: 最大同时加载模型数，默认5
     """
     f_max: float = 10e9  # 10 GFLOPS
-    E_max: float = 500e3  # 500 kJ
+    E_max: float = 10e3  # 10 kJ (大幅减少以强制能量约束生效)
     H: float = 100.0  # 100m
     P_hover: float = 150.0  # 150W
     P_fly: float = 200.0  # 200W
@@ -87,7 +87,7 @@ class EnergyParams:
         P_write: Checkpoint写入功率 (W)，默认7W
         gamma_cp: Checkpoint时间系数 (s/byte)，默认0.1 s/MB
     """
-    kappa_edge: float = 1e-28  # 边缘能耗系数
+    kappa_edge: float = 1e-25  # 边缘能耗系数 (增大1000倍使能量约束生效)
     kappa_cloud: float = 1e-29  # 云端能耗系数
     P_write: float = 7.0  # Checkpoint写入功率
     gamma_cp: float = 0.1 / (1024 * 1024)  # 0.1 s/MB -> s/byte

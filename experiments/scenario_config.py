@@ -201,7 +201,7 @@ def create_small_scale_config(n_uavs: int = 5, n_users: int = 30,
         uav_config=UAVConfig(
             n_uavs=n_uavs,
             compute_capacity=15e9,       # 15 GFLOPS
-            energy_capacity=500e3,       # 500 kJ
+            energy_capacity=10e3,       # 10 kJ (大幅减少以强制能量约束生效)
             height=100.0,                # 100m
             cover_radius=100.0,          # 100m覆盖
             hover_power=100.0,           # 100W悬停
@@ -265,7 +265,7 @@ def create_large_scale_config(n_uavs: int = 15, n_users: int = 100,
         uav_config=UAVConfig(
             n_uavs=n_uavs,
             compute_capacity=15e9,       # 15 GFLOPS
-            energy_capacity=500e3,       # 500 kJ
+            energy_capacity=10e3,       # 10 kJ (大幅减少以强制能量约束生效)
             height=100.0,                # 100m
             cover_radius=150.0,          # 150m覆盖（稍大）
             hover_power=100.0,           # 100W悬停
