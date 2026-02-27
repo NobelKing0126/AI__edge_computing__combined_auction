@@ -25,21 +25,38 @@ from experiments.task_types import (
 
 @dataclass
 class TaskQueueConfig:
-    """任务队列配置"""
+    """
+    任务队列配置
+
+    支持多种到达模式:
+    - 'poisson': 泊松过程，任务随机到达
+    - 'fixed': 固定模式，任务均匀分布
+    - 'batch': 批次模式，任务按批次到达
+    """
+    # 基础参数
+    n_users: int = 50                # 目标用户数
+    tasks_per_user: int = 5          # 每用户任务数
+    seed: int = 42
+
     # 泊松过程参数
-    arrival_rate: float = 0.1      # 任务到达速率 (任务/秒)
+    arrival_rate: float = 0.1        # 任务到达速率 (任务/秒)
     mean_inter_arrival: float = 10.0  # 平均到达间隔 (秒)
     simulation_time: float = 100.0   # 仿真总时长 (秒)
 
-    # 任务生成参数
-    task_generator: Optional['MNISTTaskGenerator'] = None
-    n_users: int = 50                # 目标用户数
-    seed: int = 42
+    # 到达模式
+    arrival_mode: str = 'poisson'    # 'poisson' | 'fixed' | 'batch'
 
-    # 到达模式控制
+    # 场景参数
+    area_size: float = 200.0         # 场景大小 (米)
+    n_uavs: int = 5                  # UAV数量
+
+    # 突发模式参数
     enable_burst_arrival: bool = False  # 是否启用突发到达
     burst_probability: float = 0.05      # 突发到达概率
     burst_size: int = 5              # 突发任务数
+
+    # 任务生成器 (可选)
+    task_generator: Optional['MNISTTaskGenerator'] = None
 
 
 @dataclass
@@ -84,11 +101,14 @@ class TaskQueueGenerator:
             # 默认使用MNISTTaskGenerator
             from experiments.task_types import MNISTTaskGenerator
             self.config.task_generator = MNISTTaskGenerator(
-                area_size=200.0,
+                area_size=self.config.area_size,
                 latency_ratio=0.5,
-                tasks_per_user=5,
+                tasks_per_user=self.config.tasks_per_user,
                 seed=self.config.seed
             )
+        else:
+            # 同步配置
+            self.config.task_generator.tasks_per_user = self.config.tasks_per_user
 
         # 生成目标任务总数（基于到达速率和仿真时长）
         self._calculate_expected_tasks()
@@ -99,17 +119,237 @@ class TaskQueueGenerator:
         self.current_user_id = 0
         self.current_arrival_time = 0.0
 
+    # ============ 动态调整方法（支持链式调用） ============
+
+    def set_n_users(self, n_users: int) -> 'TaskQueueGenerator':
+        """
+        动态设置用户数
+
+        Args:
+            n_users: 用户数量
+
+        Returns:
+            self (支持链式调用)
+        """
+        self.config.n_users = n_users
+        self._calculate_expected_tasks()
+        return self
+
+    def set_n_uavs(self, n_uavs: int) -> 'TaskQueueGenerator':
+        """
+        动态设置UAV数量
+
+        Args:
+            n_uavs: UAV数量
+
+        Returns:
+            self (支持链式调用)
+        """
+        self.config.n_uavs = n_uavs
+        return self
+
+    def set_arrival_rate(self, rate: float) -> 'TaskQueueGenerator':
+        """
+        动态设置到达速率
+
+        Args:
+            rate: 任务到达速率 (任务/秒)
+
+        Returns:
+            self (支持链式调用)
+        """
+        self.config.arrival_rate = rate
+        self._calculate_expected_tasks()
+        return self
+
+    def set_tasks_per_user(self, tasks: int) -> 'TaskQueueGenerator':
+        """
+        动态设置每用户任务数
+
+        Args:
+            tasks: 每用户任务数
+
+        Returns:
+            self (支持链式调用)
+        """
+        self.config.tasks_per_user = tasks
+        if self.config.task_generator is not None:
+            self.config.task_generator.tasks_per_user = tasks
+        self._calculate_expected_tasks()
+        return self
+
+    def set_arrival_mode(self, mode: str) -> 'TaskQueueGenerator':
+        """
+        动态设置到达模式
+
+        Args:
+            mode: 到达模式 ('poisson' | 'fixed' | 'batch')
+
+        Returns:
+            self (支持链式调用)
+        """
+        if mode not in ['poisson', 'fixed', 'batch']:
+            raise ValueError(f"无效的到达模式: {mode}，必须是 'poisson', 'fixed' 或 'batch'")
+        self.config.arrival_mode = mode
+        return self
+
+    def set_area_size(self, size: float) -> 'TaskQueueGenerator':
+        """
+        动态设置场景大小
+
+        Args:
+            size: 场景大小 (米)
+
+        Returns:
+            self (支持链式调用)
+        """
+        self.config.area_size = size
+        if self.config.task_generator is not None:
+            self.config.task_generator.area_size = size
+        return self
+
+    # ============ 实验适配方法 ============
+
+    def configure_for_experiment(self, exp_id: int, **kwargs) -> 'TaskQueueGenerator':
+        """
+        根据实验ID自动配置参数
+
+        实验配置对照表:
+        | Exp | 名称               | 用户数 | UAV数 | 每用户任务数 | 到达模式 |
+        |-----|-------------------|-------|------|------------|---------|
+        | 1   | 小规模基线对比       | 200   | 15   | 5          | poisson |
+        | 2   | 小规模用户扩展       | 可变  | 5    | 5          | fixed   |
+        | 3   | 小规模UAV扩展       | 30    | 可变  | 5          | fixed   |
+        | 4   | 大规模用户扩展       | 可变  | 15   | 10         | fixed   |
+        | 5   | 大规模UAV扩展       | 150   | 可变  | 10         | fixed   |
+
+        Args:
+            exp_id: 实验编号 (1-5)
+            **kwargs: 覆盖默认参数
+                - n_users: 用户数量（用于Exp2, Exp4）
+                - n_uavs: UAV数量（用于Exp3, Exp5）
+                - arrival_rate: 到达速率
+                - seed: 随机种子
+
+        Returns:
+            self (支持链式调用)
+        """
+        # 实验默认配置
+        exp_configs = {
+            1: {
+                'n_users': 200,
+                'n_uavs': 15,
+                'tasks_per_user': 5,
+                'arrival_mode': 'poisson',
+                'arrival_rate': 0.1,
+                'area_size': 200.0
+            },
+            2: {
+                'n_users': kwargs.get('n_users', 30),
+                'n_uavs': 5,
+                'tasks_per_user': 5,
+                'arrival_mode': 'fixed',
+                'arrival_rate': 0.1,
+                'area_size': 200.0
+            },
+            3: {
+                'n_users': 30,
+                'n_uavs': kwargs.get('n_uavs', 5),
+                'tasks_per_user': 5,
+                'arrival_mode': 'fixed',
+                'arrival_rate': 0.1,
+                'area_size': 200.0
+            },
+            4: {
+                'n_users': kwargs.get('n_users', 100),
+                'n_uavs': 15,
+                'tasks_per_user': 10,
+                'arrival_mode': 'fixed',
+                'arrival_rate': 0.05,
+                'area_size': 500.0
+            },
+            5: {
+                'n_users': 150,
+                'n_uavs': kwargs.get('n_uavs', 15),
+                'tasks_per_user': 10,
+                'arrival_mode': 'fixed',
+                'arrival_rate': 0.05,
+                'area_size': 500.0
+            }
+        }
+
+        if exp_id not in exp_configs:
+            raise ValueError(f"无效的实验ID: {exp_id}，必须是 1-5")
+
+        # 应用配置
+        config = exp_configs[exp_id]
+
+        # 允许kwargs覆盖
+        if 'seed' in kwargs:
+            self.config.seed = kwargs['seed']
+            self.rng = np.random.default_rng(self.config.seed)
+        if 'arrival_rate' in kwargs:
+            config['arrival_rate'] = kwargs['arrival_rate']
+
+        # 更新配置
+        self.config.n_users = config['n_users']
+        self.config.n_uavs = config['n_uavs']
+        self.config.tasks_per_user = config['tasks_per_user']
+        self.config.arrival_mode = config['arrival_mode']
+        self.config.arrival_rate = config['arrival_rate']
+        self.config.area_size = config['area_size']
+
+        # 同步到任务生成器
+        if self.config.task_generator is not None:
+            self.config.task_generator.tasks_per_user = self.config.tasks_per_user
+            self.config.task_generator.area_size = self.config.area_size
+
+        self._calculate_expected_tasks()
+        return self
+
+    def get_experiment_config(self) -> Dict:
+        """
+        获取当前实验配置
+
+        Returns:
+            配置字典
+        """
+        return {
+            'n_users': self.config.n_users,
+            'n_uavs': self.config.n_uavs,
+            'tasks_per_user': self.config.tasks_per_user,
+            'arrival_mode': self.config.arrival_mode,
+            'arrival_rate': self.config.arrival_rate,
+            'area_size': self.config.area_size,
+            'seed': self.config.seed,
+            'expected_total_tasks': self.expected_total_tasks
+        }
+
     def _calculate_expected_tasks(self):
-        """计算预期任务总数"""
+        """
+        计算预期任务总数
+
+        根据不同的到达模式计算:
+        - poisson: 预期任务数 = 用户数 × 每用户任务数（到达时间随机）
+        - fixed: 预期任务数 = 用户数 × 每用户任务数
+        - batch: 预期任务数 = 用户数 × 每用户任务数
+        """
+        # 获取每用户任务数
+        tasks_per_user = self.config.tasks_per_user
+        if self.config.task_generator is not None:
+            tasks_per_user = self.config.task_generator.tasks_per_user
+
+        # 所有模式都基于用户数×每用户任务数计算
+        base_tasks = int(self.config.n_users * tasks_per_user)
+
         if self.config.enable_burst_arrival:
             # 突发模式：预期任务数 = 基础任务数 + 突发概率 * 突发大小
-            base_tasks = int(self.config.n_users * self.config.task_generator.tasks_per_user)
             expected = base_tasks + int(base_tasks * self.config.burst_probability * self.config.burst_size)
         else:
-            # 泊松过程：预期任务数 = 到达速率 × 仿真时长
-            expected = int(self.config.arrival_rate * self.config.simulation_time)
+            # 所有模式：预期任务数 = 用户数 × 每用户任务数
+            expected = base_tasks
 
-        self.expected_total_tasks = expected
+        self.expected_total_tasks = max(expected, 1)  # 至少1个任务
 
     def generate_poisson_arrivals(self, n_users: int,
                                   seed: int = None) -> List[float]:
@@ -395,7 +635,10 @@ def create_task_queue_generator(arrival_rate: float = 0.1,
                                   n_users: int = 50,
                                   simulation_time: float = 100.0,
                                   tasks_per_user: int = 5,
-                                  seed: int = 42) -> TaskQueueGenerator:
+                                  seed: int = 42,
+                                  arrival_mode: str = 'poisson',
+                                  n_uavs: int = 5,
+                                  area_size: float = 200.0) -> TaskQueueGenerator:
     """
     创建任务队列生成器（便捷函数）
 
@@ -405,16 +648,22 @@ def create_task_queue_generator(arrival_rate: float = 0.1,
         simulation_time: 仿真总时长 (秒)
         tasks_per_user: 每用户任务数
         seed: 随机种子
+        arrival_mode: 到达模式 ('poisson' | 'fixed' | 'batch')
+        n_uavs: UAV数量
+        area_size: 场景大小 (米)
 
     Returns:
         TaskQueueGenerator实例
     """
     config = TaskQueueConfig(
-        arrival_rate=arrival_rate,
         n_users=n_users,
-        simulation_time=simulation_time,
         tasks_per_user=tasks_per_user,
-        seed=seed
+        seed=seed,
+        arrival_rate=arrival_rate,
+        simulation_time=simulation_time,
+        arrival_mode=arrival_mode,
+        n_uavs=n_uavs,
+        area_size=area_size
     )
     return TaskQueueGenerator(config)
 
@@ -439,11 +688,23 @@ def adapt_to_experiment_config(exp_config: Dict,
     else:
         n_users = queue_generator.config.n_users
 
+    # 确定UAV数
+    if 'n_uavs' in exp_config:
+        n_uavs = exp_config['n_uavs']
+    else:
+        n_uavs = queue_generator.config.n_uavs
+
+    # 获取每用户任务数
+    tasks_per_user = queue_generator.config.tasks_per_user
+    if queue_generator.config.task_generator is not None:
+        tasks_per_user = queue_generator.config.task_generator.tasks_per_user
+
     # 计算总任务数
-    total_tasks = n_users * queue_generator.config.task_generator.tasks_per_user
+    total_tasks = n_users * tasks_per_user
 
     # 根据任务数调整仿真时长
-    if queue_generator.config.arrival_rate > 0:
+    arrival_mode = queue_generator.config.arrival_mode
+    if arrival_mode == 'poisson' and queue_generator.config.arrival_rate > 0:
         # 保证足够的时间生成所有任务
         simulation_time = (total_tasks / queue_generator.config.arrival_rate) * 1.5 + 10
     else:
@@ -452,12 +713,14 @@ def adapt_to_experiment_config(exp_config: Dict,
 
     return {
         'task_queue_enabled': True,
-        'arrival_mode': 'poisson',
+        'arrival_mode': arrival_mode,
         'n_users': n_users,
+        'n_uavs': n_uavs,
         'total_tasks': total_tasks,
         'simulation_time': simulation_time,
-        'tasks_per_user': queue_generator.config.task_generator.tasks_per_user,
+        'tasks_per_user': tasks_per_user,
         'arrival_rate': queue_generator.config.arrival_rate,
+        'area_size': queue_generator.config.area_size,
     }
 
 
@@ -465,9 +728,12 @@ def adapt_to_experiment_config(exp_config: Dict,
 
 if __name__ == "__main__":
     print("任务队列生成器示例")
-    print("=" * 50)
+    print("=" * 60)
 
-    # 创建任务队列生成器
+    # ============ 示例1: 基本使用 ============
+    print("\n【示例1】基本使用 - 泊松到达模式")
+    print("-" * 60)
+
     queue_gen = create_task_queue_generator(
         arrival_rate=0.05,  # 平均每5秒一个任务
         n_users=50,
@@ -477,22 +743,66 @@ if __name__ == "__main__":
     )
 
     # 生成任务队列
-    task_queue = queue_gen.generate_task_queue()
+    task_queue = list(queue_gen.generate_task_queue())
 
-    # 打印前10个任务的到达信息
-    print(f"\n预期总任务数: {queue_gen.expected_total_tasks}")
-    print(f"任务数/用户: {queue_gen.config.task_generator.tasks_per_user}")
-    print(f"\n前20个任务到达信息:")
-    print(f"{'TaskID':<6} {'User':<6} {'Type':<18} {'Images':<8} {'Deadline':<10} {'Priority':<10} {'ArrivalTime':<12} {'Interval':<10}")
-    print("-" * 80)
+    print(f"预期总任务数: {queue_gen.expected_total_tasks}")
+    print(f"实际任务数: {len(task_queue)}")
 
-    count = 0
-    for task in task_queue:
-        if count >= 20:
-            break
-        t = task
-        print(f"{t.task_id:4d}  | {t.user_id:2d}  | {t.task_type:18s}  | {t.n_images:2d}  | {t.deadline:.2f}  | {t.priority:.2f}  | {t.arrival_time:.2f}  | {t.arrival_interval:.2f}")
-        count += 1
+    # ============ 示例2: 链式调用配置 ============
+    print("\n【示例2】链式调用配置")
+    print("-" * 60)
 
-    print("-" * 80)
-    print(f"\n总实际任务数: {count}")
+    queue_gen2 = TaskQueueGenerator()
+    queue_gen2.set_n_users(100).set_arrival_rate(0.08).set_tasks_per_user(10)
+
+    config = queue_gen2.get_experiment_config()
+    print(f"用户数: {config['n_users']}")
+    print(f"到达速率: {config['arrival_rate']}")
+    print(f"每用户任务数: {config['tasks_per_user']}")
+    print(f"预期任务数: {config['expected_total_tasks']}")
+
+    # ============ 示例3: 实验适配 ============
+    print("\n【示例3】实验适配 - 5个实验配置")
+    print("-" * 60)
+
+    for exp_id in [1, 2, 3, 4, 5]:
+        gen = TaskQueueGenerator().configure_for_experiment(exp_id)
+        cfg = gen.get_experiment_config()
+        print(f"Exp{exp_id}: 用户={cfg['n_users']:3d}, UAV={cfg['n_uavs']:2d}, "
+              f"任务/用户={cfg['tasks_per_user']:2d}, 模式={cfg['arrival_mode']:7s}, "
+              f"预期任务={cfg['expected_total_tasks']}")
+
+    # ============ 示例4: 动态调整实验参数 ============
+    print("\n【示例4】动态调整实验参数")
+    print("-" * 60)
+
+    # Exp2: 用户数扩展实验 (10, 20, 30, 40, 50)
+    print("Exp2 - 用户扩展:")
+    for n_users in [10, 20, 30, 40, 50]:
+        gen = TaskQueueGenerator().configure_for_experiment(2, n_users=n_users)
+        cfg = gen.get_experiment_config()
+        print(f"  用户={cfg['n_users']:2d}: 预期任务={cfg['expected_total_tasks']}")
+
+    # Exp3: UAV扩展实验 (3, 4, 5, 6, 7, 8)
+    print("\nExp3 - UAV扩展:")
+    for n_uavs in [3, 4, 5, 6, 7, 8]:
+        gen = TaskQueueGenerator().configure_for_experiment(3, n_uavs=n_uavs)
+        cfg = gen.get_experiment_config()
+        print(f"  UAV={cfg['n_uavs']:2d}: 预期任务={cfg['expected_total_tasks']}")
+
+    # Exp4: 大规模用户扩展 (50, 80, 100, 150, 200)
+    print("\nExp4 - 大规模用户扩展:")
+    for n_users in [50, 80, 100, 150, 200]:
+        gen = TaskQueueGenerator().configure_for_experiment(4, n_users=n_users)
+        cfg = gen.get_experiment_config()
+        print(f"  用户={cfg['n_users']:3d}: 预期任务={cfg['expected_total_tasks']}")
+
+    # Exp5: 大规模UAV扩展 (10, 12, 15, 18, 20)
+    print("\nExp5 - 大规模UAV扩展:")
+    for n_uavs in [10, 12, 15, 18, 20]:
+        gen = TaskQueueGenerator().configure_for_experiment(5, n_uavs=n_uavs)
+        cfg = gen.get_experiment_config()
+        print(f"  UAV={cfg['n_uavs']:2d}: 预期任务={cfg['expected_total_tasks']}")
+
+    print("\n" + "=" * 60)
+    print("示例完成")
