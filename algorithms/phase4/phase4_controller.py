@@ -1,7 +1,7 @@
 """
 M23: Phase4Controller - 阶段4控制器
 
-功能：协调任务执行、故障处理、动态定价的完整流程
+功能：协调任务执行、故障处理、动态定价、移动管理的完整流程
 输入：执行计划、UAV状态
 输出：执行结果、系统状态更新
 
@@ -11,7 +11,8 @@ M23: Phase4Controller - 阶段4控制器
     3. 监控执行状态
     4. 处理故障和迁移
     5. 动态调整价格
-    6. 生成执行报告
+    6. 处理用户移动和UAV重定位
+    7. 生成执行报告
 """
 
 import numpy as np
@@ -28,23 +29,30 @@ from algorithms.phase4.task_executor import (
 from algorithms.phase4.dynamic_pricing import (
     DynamicPricingManager, UtilizationInfo, ResourcePrices
 )
+from algorithms.phase4.mobility_manager import (
+    MobilityManager, MobilityStepResult
+)
+from models.mobility import MobilityMetrics
+from config.system_config import SystemConfig
 
 
 @dataclass
 class Phase4Result:
     """
     阶段4结果
-    
+
     Attributes:
         execution_results: 执行结果
         failed_tasks: 失败任务
         final_prices: 最终价格
         stats: 统计信息
+        mobility_metrics: 移动指标（可选）
     """
     execution_results: Dict[int, ExecutionResult]
     failed_tasks: List[int]
     final_prices: Dict[int, ResourcePrices]
     stats: Dict
+    mobility_metrics: Optional[MobilityMetrics] = None
 
 
 @dataclass
@@ -75,30 +83,64 @@ class UAVRuntimeState:
 class Phase4Controller:
     """
     阶段4控制器
-    
+
     Attributes:
         executor: 任务执行器
         pricing_manager: 动态定价管理器
+        mobility_manager: 移动管理器
         uav_states: UAV状态
+        config: 系统配置
     """
-    
-    def __init__(self):
-        """初始化控制器"""
+
+    def __init__(self, config: Optional[SystemConfig] = None):
+        """
+        初始化控制器
+
+        Args:
+            config: 系统配置（可选，用于启用移动管理）
+        """
         self.executor = TaskExecutor()
         self.pricing_manager = DynamicPricingManager()
         self.uav_states: Dict[int, UAVRuntimeState] = {}
+
+        # 移动管理器（可选）
+        self.config = config
+        self.mobility_manager: Optional[MobilityManager] = None
+
+        # 用户和UAV引用（用于移动管理）
+        self.users: List = []
+        self.uavs: List = []
     
-    def initialize(self, uav_states: List[UAVRuntimeState]):
+    def initialize(self,
+                  uav_states: List[UAVRuntimeState],
+                  config: Optional[SystemConfig] = None,
+                  users: Optional[List] = None,
+                  uavs: Optional[List] = None,
+                  hotspots: Optional[List[Tuple[float, float]]] = None):
         """
         初始化系统
-        
+
         Args:
             uav_states: UAV状态列表
+            config: 系统配置（可选，用于启用移动功能）
+            users: 用户列表（用于移动管理）
+            uavs: UAV列表（用于移动管理）
+            hotspots: 热点位置列表
         """
         self.uav_states = {s.uav_id: s for s in uav_states}
-        
+
         # 初始化价格
         self.pricing_manager.initialize_prices(list(self.uav_states.keys()))
+
+        # 初始化移动管理器（如果提供了配置）
+        if config is not None:
+            self.config = config
+            if config.mobility.enable_user_mobility or config.mobility.enable_mismatch_trigger:
+                self.mobility_manager = MobilityManager(config)
+                if users is not None and uavs is not None:
+                    self.users = users
+                    self.uavs = uavs
+                    self.mobility_manager.initialize(uavs, users, hotspots)
     
     def convert_plans_to_tasks(self, 
                                plans: List[Dict],
@@ -177,6 +219,79 @@ class Phase4Controller:
             failed_tasks=failed_ids,
             final_prices=self.pricing_manager.get_all_prices(),
             stats=stats
+        )
+
+    def run_with_mobility(self,
+                         tasks: List[ExecutionTask],
+                         time_step: float = 0.1,
+                         max_time: float = 100.0,
+                         pricing_interval: float = 1.0,
+                         active_tasks: Optional[Dict[int, List[int]]] = None) -> Phase4Result:
+        """
+        运行阶段4（带移动支持）
+
+        参考 (docs/idea118.txt 4.11节):
+            在每个时间步更新用户位置和UAV重定位
+
+        Args:
+            tasks: 任务列表
+            time_step: 时间步长
+            max_time: 最大执行时间
+            pricing_interval: 价格更新间隔
+            active_tasks: 每个UAV的活跃任务ID列表
+
+        Returns:
+            Phase4Result: 阶段4结果（含移动指标）
+        """
+        # 如果没有移动管理器，退化为普通执行
+        if self.mobility_manager is None:
+            return self.run(tasks, time_step, max_time, pricing_interval)
+
+        # 执行任务
+        results = self.executor.simulate_execution(tasks, time_step, max_time)
+
+        # 更新UAV状态
+        for task_id, result in results.items():
+            task = next((t for t in tasks if t.task_id == task_id), None)
+            if task and task.uav_id in self.uav_states:
+                state = self.uav_states[task.uav_id]
+                state.E_remain -= result.energy_consumed
+                state.completed_tasks += 1
+
+        # 执行移动更新
+        if self.users and self.uavs:
+            mobility_result = self.mobility_manager.step(
+                self.uavs, self.users, time_step, active_tasks or {}
+            )
+
+        # 计算利用率并更新价格
+        utilizations = self._compute_utilizations(tasks, results)
+        self.pricing_manager.update_all_prices(utilizations, max_time)
+
+        # 收集失败任务
+        failed_ids = list(self.executor.failed_tasks.keys())
+
+        # 统计信息
+        stats = self._compute_stats(results, failed_ids)
+
+        # 添加移动指标
+        mobility_metrics = None
+        if self.mobility_manager is not None:
+            mobility_metrics = self.mobility_manager.get_metrics()
+            stats['mobility'] = {
+                'user_total_distance': mobility_metrics.user_total_distance,
+                'uav_relocation_count': mobility_metrics.uav_relocation_count,
+                'uav_total_fly_distance': mobility_metrics.uav_total_fly_distance,
+                'uav_total_fly_energy': mobility_metrics.uav_total_fly_energy,
+                'tasks_migrated': mobility_metrics.tasks_migrated
+            }
+
+        return Phase4Result(
+            execution_results=results,
+            failed_tasks=failed_ids,
+            final_prices=self.pricing_manager.get_all_prices(),
+            stats=stats,
+            mobility_metrics=mobility_metrics
         )
     
     def _compute_utilizations(self,

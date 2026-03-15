@@ -133,6 +133,10 @@ class ProposedMethod:
             w_p=FREE_ENERGY.W_PROGRESS
         )
 
+        # 算力资源释放机制
+        self.task_queue = {}  # {uav_id: [(completion_time, C_edge), ...]}
+        self.current_time = 0.0  # 当前仿真时间
+
     def _reset_tracking(self, n_uavs: int):
         """重置资源跟踪"""
         self.uav_compute_used = {i: 0.0 for i in range(n_uavs)}
@@ -158,7 +162,59 @@ class ProposedMethod:
         self.auctioneer_id = None
         self.election_result = None
         self.last_user_centroid = None
-    
+
+        # 重置任务队列和仿真时间（用于算力资源释放）
+        self.task_queue = {i: [] for i in range(n_uavs)}
+        self.current_time = 0.0
+
+    def _release_completed_tasks(self, uav_id: int, current_time: float):
+        """
+        释放已完成的任务占用的算力资源
+
+        算力是占用型资源，任务完成后需要释放，而能量是消耗型资源不释放。
+
+        Args:
+            uav_id: UAV ID
+            current_time: 当前时间
+        """
+        if uav_id not in self.task_queue:
+            return
+
+        # 找出已完成的任务
+        completed = []
+        remaining = []
+
+        for completion_time, C_edge in self.task_queue[uav_id]:
+            if completion_time <= current_time:
+                completed.append((completion_time, C_edge))
+            else:
+                remaining.append((completion_time, C_edge))
+
+        # 释放已完成任务的算力
+        for _, C_edge in completed:
+            self.uav_compute_used[uav_id] = max(0, self.uav_compute_used[uav_id] - C_edge)
+
+        # 更新队列
+        self.task_queue[uav_id] = remaining
+
+    def _get_available_compute(self, uav_id: int, current_time: float) -> float:
+        """
+        获取UAV当前可用算力（考虑任务完成释放）
+
+        Args:
+            uav_id: UAV ID
+            current_time: 当前时间
+
+        Returns:
+            float: 可用算力
+        """
+        # 先释放已完成的任务
+        self._release_completed_tasks(uav_id, current_time)
+
+        f_max = self.config.uav.f_max
+        f_used = self.uav_compute_used.get(uav_id, 0)
+        return max(0, f_max - f_used)
+
     def _build_uav_states(self, uav_resources: List[Dict], 
                           uav_positions: List[Tuple[float, float]],
                           remaining_E: Dict) -> List[UAVState]:
@@ -354,29 +410,42 @@ class ProposedMethod:
             bid_counter = 0
             for uav_id in range(n_uavs):
                 uav_pos = uav_positions[uav_id]
-                
+
+                # 获取UAV的覆盖半径和高度（从资源配置中获取，支持场景特定配置）
+                cover_radius = uav_resources[uav_id].get('R_cover', self.config.uav.R_cover)
+                uav_height = uav_resources[uav_id].get('z', self.config.uav.H)
+
                 # 检查UAV是否覆盖该用户
-                if not self._is_uav_covering_user(user_pos, uav_pos):
+                if not self._is_uav_covering_user(user_pos, uav_pos, cover_radius, uav_height):
                     continue
-                
+
                 f_edge = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
                 uav_energy = remaining_E.get(uav_id, 0)
-                
+                E_max = uav_resources[uav_id].get('E_max', self.config.uav.E_max)
+                queue_size = self.uav_task_count.get(uav_id, 0)
+
                 # 生成Top-K投标
                 uav_bids = self._generate_top_k_bids_for_uav(
                     task, uav_id, uav_pos, f_edge, f_cloud, R_backhaul,
                     remaining_energy=uav_energy,
                     n_concurrent=n_concurrent,
-                    top_k=top_k
+                    top_k=top_k,
+                    E_max=E_max,
+                    queue_size=queue_size
                 )
                 
                 for bid in uav_bids:
+                    # 修复: f_required 应该是任务完成所需的峰值算力，而不是总计算量
+                    # 计算峰值算力需求 = C_edge / T_total (FLOPS)
+                    # 这样资源约束才有意义
+                    peak_f_required = bid['C_edge'] / max(bid['delay'], 0.1) if bid['delay'] > 0 else 0
+
                     bid_info = BidInfo(
                         task_id=orig_idx,
                         bid_id=bid_counter,
                         uav_id=bid['uav_id'],
                         utility=bid['utility'],
-                        f_required=bid['C_edge'],  # 使用边缘计算量作为算力需求
+                        f_required=peak_f_required,  # 使用峰值算力需求
                         E_required=bid['energy'],
                         T_predict=bid['delay'],
                         priority=task.get('priority', 0.5)
@@ -394,9 +463,14 @@ class ProposedMethod:
         # 构建UAV资源约束
         uav_resource_list = []
         for uav_id in range(n_uavs):
+            # 计算可用算力：考虑已用算力
+            f_max = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
+            f_used = self.uav_compute_used.get(uav_id, 0)  # 已用算力
+            f_available = max(0, f_max - f_used * 0.1)  # 考虑已用算力的影响（不再放大5倍）
+
             uav_resource_list.append(UAVResource(
                 uav_id=uav_id,
-                F_available=uav_resources[uav_id].get('f_max', self.config.uav.f_max) * 5,  # 允许处理多个任务
+                F_available=f_available,  # 不再放大，使用真实可用算力
                 E_available=remaining_E.get(uav_id, self.config.uav.E_max)
             ))
         
@@ -511,20 +585,34 @@ class ProposedMethod:
                 nearest = i
         return nearest
     
-    def _is_uav_covering_user(self, user_pos: Tuple[float, float], 
-                               uav_pos: Tuple[float, float]) -> bool:
+    def _is_uav_covering_user(self, user_pos: Tuple[float, float],
+                               uav_pos: Tuple[float, float],
+                               cover_radius: float = None,
+                               uav_height: float = None) -> bool:
         """
-        判断UAV是否覆盖用户
-        
+        判断UAV是否覆盖用户（考虑3D距离，包含UAV高度）
+
         Args:
             user_pos: 用户位置 (x, y)
             uav_pos: UAV位置 (x, y)
-            
+            cover_radius: 覆盖半径（如果为None，使用SystemConfig默认值）
+            uav_height: UAV飞行高度（如果为None，使用SystemConfig默认值）
+
         Returns:
             bool: UAV是否覆盖该用户
         """
-        distance = np.sqrt((user_pos[0] - uav_pos[0])**2 + (user_pos[1] - uav_pos[1])**2)
-        return distance <= self.config.uav.R_cover
+        # UAV飞行高度（优先使用传入的值）
+        H = uav_height if uav_height is not None else self.config.uav.H
+
+        # 使用传入的覆盖半径，或回退到SystemConfig
+        R_cover = cover_radius if cover_radius is not None else self.config.uav.R_cover
+
+        # 计算3D距离（考虑UAV高度）
+        dx = user_pos[0] - uav_pos[0]
+        dy = user_pos[1] - uav_pos[1]
+        distance_3d = np.sqrt(dx**2 + dy**2 + H**2)
+
+        return distance_3d <= R_cover
     
     def _auction_select_uav(self, task: Dict, uav_resources: List[Dict],
                             uav_positions: List[Tuple[float, float]],
@@ -552,15 +640,19 @@ class ProposedMethod:
         n_uavs = len(uav_resources)
         all_bids = []
         user_pos = task.get('user_pos', (1000, 1000))
-        
+
         # Phase 2: 覆盖用户的UAV生成Top-K投标
         for uav_id in range(n_uavs):
             uav_pos = uav_positions[uav_id]
-            
+
+            # 获取UAV的覆盖半径和高度（从资源配置中获取，支持场景特定配置）
+            cover_radius = uav_resources[uav_id].get('R_cover', self.config.uav.R_cover)
+            uav_height = uav_resources[uav_id].get('z', self.config.uav.H)
+
             # 检查UAV是否覆盖该用户
-            if not self._is_uav_covering_user(user_pos, uav_pos):
+            if not self._is_uav_covering_user(user_pos, uav_pos, cover_radius, uav_height):
                 continue  # 不在覆盖范围内，不响应
-            
+
             f_edge = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
             uav_energy = remaining_E.get(uav_id, 0)
             
@@ -606,22 +698,23 @@ class ProposedMethod:
         """
         if C_cloud <= 0:
             return 0.0
-        
+
         F_c = self.config.cloud.F_c
-        F_per_task_max = self.config.cloud.F_per_task_max  # 单任务最大算力限制
-        max_concurrent = self.config.cloud.max_concurrent_tasks
-        
+        # 使用规模特定的参数（第五轮优化）
+        F_per_task_max = getattr(self, '_current_F_per_task_max', self.config.cloud.F_per_task_max)
+        max_concurrent = getattr(self, '_current_max_concurrent', self.config.cloud.max_concurrent_tasks)
+
         # 有效并发数：至少1，最多max_concurrent
         effective_concurrent = max(1, min(n_concurrent, max_concurrent))
-        
+
         # 每个任务分配的算力 = min(总算力/并发数, 单任务上限)
         f_per_task = min(F_c / effective_concurrent, F_per_task_max)
-        
+
         return C_cloud / f_per_task
-    
+
     def _get_propagation_delay(self) -> float:
-        """获取UAV到云端的网络传播延迟"""
-        return self.config.cloud.T_propagation
+        """获取UAV到云端的网络传播延迟（使用规模特定参数）"""
+        return getattr(self, '_current_T_propagation', self.config.cloud.T_propagation)
     
     def _get_feature_size_at_layer(self, split_layer: int, model_spec, n_layers: int) -> float:
         """
@@ -683,10 +776,11 @@ class ProposedMethod:
     def _generate_top_k_bids_for_uav(self, task: Dict, uav_id: int, uav_pos: Tuple[float, float],
                                       f_edge: float, f_cloud: float, R_backhaul: float,
                                       remaining_energy: float, n_concurrent: int = 1,
-                                      top_k: int = 3) -> List[Dict]:
+                                      top_k: int = 3, E_max: float = None,
+                                      queue_size: int = 0) -> List[Dict]:
         """
         为指定UAV生成Top-K个投标（不同切分点）
-        
+
         Args:
             task: 任务信息
             uav_id: UAV ID
@@ -697,7 +791,9 @@ class ProposedMethod:
             remaining_energy: UAV剩余能量
             n_concurrent: 云端并发任务数
             top_k: 返回的投标数量
-            
+            E_max: UAV最大能量（用于计算能量预算）
+            queue_size: 当前UAV任务队列长度
+
         Returns:
             List[Dict]: Top-K个投标列表（按效用降序）
         """
@@ -705,33 +801,41 @@ class ProposedMethod:
         data_size = task.get('data_size', 1e6)
         deadline = task.get('deadline', 1.0)
         user_pos = task.get('user_pos', (1000, 1000))
-        
+
         # 获取DNN模型信息
         model_spec = task.get('model_spec', None)
         if model_spec and hasattr(model_spec, 'layers'):
             n_layers = model_spec.layers
         else:
             n_layers = 10
-        
+
+        # ========== 能量预算计算（按照idea38.txt） ==========
+        # E_budget = min(E_remain/(|Q_j|+1), 0.3*E_max) - E_comm
+        # 但E_comm在循环中计算，这里先设置能量预算上限
+        if E_max is None:
+            E_max = self.config.uav.E_max
+        E_budget_ratio = 0.3  # 单任务最多使用30%的E_max
+        E_budget_max = E_budget_ratio * E_max
+
         upload_rate = self._compute_upload_rate(user_pos, uav_pos)
         T_upload = data_size / upload_rate
         T_propagation = self._get_propagation_delay()
-        
+
         all_bids = []
-        
+
         # 枚举所有整数层切分点 (0 到 n_layers)
         for split_layer in range(0, n_layers + 1):
             # 使用精确的计算量分配
             C_edge = self._get_cumulative_flops_at_layer(split_layer, model_spec, n_layers, C_total)
             C_cloud = C_total - C_edge
             split_ratio = split_layer / n_layers
-            
+
             # 获取精确的中间特征大小
             feature_size = self._get_feature_size_at_layer(split_layer, model_spec, n_layers)
-            
+
             # 边缘计算时延
             T_edge = C_edge / f_edge if C_edge > 0 else 0
-            
+
             # 传输时延和云端时延
             if split_layer < n_layers:
                 T_trans = feature_size / R_backhaul
@@ -741,19 +845,26 @@ class ProposedMethod:
                 T_trans = 0
                 T_cloud = 0
                 T_propagation_total = 0
-            
+
             # 串行时延模型
             T_total = T_upload + T_edge + T_trans + T_propagation_total + T_cloud
-            
+
             # 能耗计算
             P_rx = self.config.uav.P_rx
             P_tx = self.config.uav.P_tx
             E_compute = self.kappa_edge * (f_edge ** 2) * C_edge
             E_comm = P_rx * T_upload + P_tx * T_trans
             energy = E_compute + E_comm
-            
-            # 检查约束
-            if T_total > deadline or energy > remaining_energy:
+
+            # ========== 能量预算约束（idea38.txt） ==========
+            # 计算实际能量预算：考虑队列竞争
+            if queue_size > 0:
+                E_budget = min(remaining_energy / (queue_size + 1), E_budget_max) - E_comm
+            else:
+                E_budget = min(remaining_energy, E_budget_max) - E_comm
+
+            # 检查约束：时延 + 能量预算
+            if T_total > deadline or energy > remaining_energy or energy > E_budget:
                 continue
 
             # 计算效用（使用 Active Inference 自由能）
@@ -1049,17 +1160,23 @@ class ProposedMethod:
             use_combinatorial_auction: 是否使用组合拍卖（True使用拉格朗日对偶分解）
             batch_size: 批量拍卖的任务数
         """
-        
+
         n_uavs = len(uav_resources)
         n_tasks = len(tasks)
         self._reset_tracking(n_uavs)
-        
+
         f_cloud = cloud_resources.get('f_cloud', self.config.cloud.F_c)
-        R_backhaul = self.config.channel.R_backhaul
-        T_propagation = self._get_propagation_delay()
-        
+        R_backhaul = cloud_resources.get('rate_edge_cloud', self.config.channel.R_backhaul)
+
+        # 从cloud_resources获取规模特定的云端参数（第五轮优化）
+        self._current_F_per_task_max = cloud_resources.get('F_per_task_max', self.config.cloud.F_per_task_max)
+        self._current_T_propagation = cloud_resources.get('T_propagation', self.config.cloud.T_propagation)
+        self._current_max_concurrent = cloud_resources.get('max_concurrent_tasks', self.config.cloud.max_concurrent_tasks)
+
+        T_propagation = self._current_T_propagation
+
         # 云端资源竞争：估算并发任务数
-        n_concurrent = min(n_tasks, self.config.cloud.max_concurrent_tasks)
+        n_concurrent = min(n_tasks, self._current_max_concurrent)
         
         # ========== Phase 0: K-means部署 ==========
         uav_positions = self._kmeans_deploy(tasks, n_uavs)
@@ -1102,6 +1219,9 @@ class ProposedMethod:
             task_batches.append(current_batch)
         
         for batch_idx, batch_tasks in enumerate(task_batches):
+            # 更新当前仿真时间（每批次间隔约1秒）
+            self.current_time = batch_idx * 1.0
+
             # 检查是否需要重新选举（每批任务前检查）
             if batch_idx > 0:
                 batch_task_list = [t for _, t in batch_tasks]
@@ -1180,7 +1300,12 @@ class ProposedMethod:
                     self.cloud_compute_used += C_cloud
                     self.channels_used += 1
                     total_utility += utility
-                    
+
+                    # 记录任务完成时间，用于算力资源释放
+                    # 完成时间 = 当前仿真时间 + 执行时延
+                    completion_time = self.current_time + best_delay
+                    self.task_queue[uav_id].append((completion_time, C_edge))
+
                     # 动态价格更新
                     task_result = {'success': success, 'energy': energy, 'utility': utility}
                     self._update_dynamic_prices(uav_id, task_result, uav_resources, remaining_E)
@@ -1285,16 +1410,38 @@ class ProposedMethod:
                 priority = task.get('priority', 0.5)
                 deadline = task.get('deadline', 5.0)
                 actual_delay = result.get('delay', deadline)
-                
-                # 任务价值 = 基础价值 × 优先级加权 × 时效性系数
-                base_value = 1.0 + priority * 2.0  # [1.0, 3.0]
-                timeliness = max(0.5, 1.0 - actual_delay / deadline * 0.3)  # [0.5, 1.0]
-                task_value = base_value * timeliness
-                
-                # 价格 = 资源成本的合理加成
-                compute_used = task.get('compute_size', 10e9) / 1e9  # GFLOPS
-                price = 0.1 * compute_used * (1 + 0.1 * priority)  # 合理定价
-                
+
+                # === 价格计算：按算力资源收费（不含使用时间）===
+                # 获取实际使用的边缘和云端算力
+                uav_id = result.get('uav_id', -1)
+                split_ratio = result.get('split_ratio', 0.5)
+
+                # 边缘算力：从UAV资源获取
+                f_edge = 0.0
+                if uav_id >= 0 and uav_id < len(uav_resources):
+                    f_edge = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
+                f_edge_gflops = f_edge / 1e9  # GFLOPS
+
+                # 云端算力：从云端资源获取
+                f_cloud = cloud_resources.get('f_cloud', self.config.cloud.F_c)
+                f_cloud_gflops = f_cloud / 1e9  # GFLOPS
+
+                # 边缘算力价格（按实际使用的算力资源）
+                edge_price = f_edge_gflops * PRICING.BASE_COMPUTE_PRICE * 1e9 * split_ratio
+
+                # 云端算力价格（云端溢价50%，因为通信时延消耗）
+                cloud_premium = 1.5
+                cloud_price = f_cloud_gflops * PRICING.BASE_COMPUTE_PRICE * cloud_premium * (1 - split_ratio)
+
+                # 总价格（归一化）
+                price = (edge_price + cloud_price) * 0.01
+
+                # === 任务价值计算 ===
+                # 基于效用、时延节省比例和优先级
+                utility = result.get('utility', 1.0)
+                time_saved_ratio = max(0, 1 - actual_delay / deadline)  # 时延节省比例
+                task_value = utility * time_saved_ratio * priority * 10 + 1.0  # 加基础价值防止负收益
+
                 payoff = task_value - price
                 payoffs.append(payoff)
                 total_revenue += price

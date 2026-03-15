@@ -202,7 +202,10 @@ class LagrangianAuction:
                         best_value = lag_value
                         best_bid = bid
                 
-                if best_bid is not None and best_value > 0:
+                # 修改: 移除 best_value > 0 条件，允许所有有效投标参与竞争
+                # 原条件导致当双变量增加时，拉格朗日值为负的任务被跳过
+                # 这会导致即使资源充足，任务也可能不被分配
+                if best_bid is not None:
                     task_selections[task_id] = best_bid
             
             # 计算资源使用情况
@@ -248,7 +251,16 @@ class LagrangianAuction:
         # 如果没有可行解，使用贪心修复
         if best_solution is None:
             best_solution = self._greedy_repair(bids, uav_resources)
-        
+        else:
+            # 即使有解，也检查是否有未分配的任务，尝试贪心修复
+            unassigned = [tid for tid in bids.keys() if tid not in best_solution]
+            if unassigned:
+                # 对未分配任务进行贪心修复
+                repair_solution = self._greedy_repair_for_unassigned(
+                    bids, uav_resources, best_solution, unassigned
+                )
+                best_solution.update(repair_solution)
+
         return self._build_result(
             best_solution, bids, uav_resources, iteration + 1, lambda_f, mu_E
         )
@@ -303,7 +315,65 @@ class LagrangianAuction:
                 remaining_E[best_bid.uav_id] -= best_bid.E_required
         
         return solution
-    
+
+    def _greedy_repair_for_unassigned(self,
+                                       bids: Dict[int, List[BidInfo]],
+                                       uav_resources: List[UAVResource],
+                                       current_solution: Dict[int, BidInfo],
+                                       unassigned_tasks: List[int]) -> Dict[int, BidInfo]:
+        """
+        对未分配任务进行贪心修复
+
+        Args:
+            bids: 投标集合
+            uav_resources: UAV资源
+            current_solution: 当前已分配的解
+            unassigned_tasks: 未分配任务列表
+
+        Returns:
+            Dict: 对未分配任务的补充解
+        """
+        # 计算当前资源使用情况
+        remaining_F = {r.uav_id: r.F_available for r in uav_resources}
+        remaining_E = {r.uav_id: r.E_available for r in uav_resources}
+
+        for bid in current_solution.values():
+            remaining_F[bid.uav_id] -= bid.f_required
+            remaining_E[bid.uav_id] -= bid.E_required
+
+        # 按优先级排序未分配任务
+        task_priority = []
+        for task_id in unassigned_tasks:
+            task_bids = bids.get(task_id, [])
+            if task_bids:
+                max_priority = max(b.priority for b in task_bids)
+                task_priority.append((task_id, max_priority))
+
+        task_priority.sort(key=lambda x: x[1], reverse=True)
+
+        solution = {}
+
+        for task_id, _ in task_priority:
+            task_bids = bids[task_id]
+
+            # 找到可行的最高效用投标
+            best_bid = None
+            best_utility = -float('inf')
+
+            for bid in task_bids:
+                if (remaining_F.get(bid.uav_id, 0) >= bid.f_required and
+                    remaining_E.get(bid.uav_id, 0) >= bid.E_required and
+                    bid.utility > best_utility):
+                    best_utility = bid.utility
+                    best_bid = bid
+
+            if best_bid is not None:
+                solution[task_id] = best_bid
+                remaining_F[best_bid.uav_id] -= best_bid.f_required
+                remaining_E[best_bid.uav_id] -= best_bid.E_required
+
+        return solution
+
     def _build_result(self,
                       solution: Dict[int, BidInfo],
                       bids: Dict[int, List[BidInfo]],

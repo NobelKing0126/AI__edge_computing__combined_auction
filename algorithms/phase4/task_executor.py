@@ -277,21 +277,28 @@ class TaskExecutor:
             task = self.running_tasks.pop(task_id)
             self.failed_tasks[task_id] = task
     
-    def simulate_execution(self, 
+    def simulate_execution(self,
                            tasks: List[ExecutionTask],
                            time_step: float = 0.1,
-                           max_time: float = 100.0) -> Dict[int, ExecutionResult]:
+                           max_time: Optional[float] = None) -> Dict[int, ExecutionResult]:
         """
         模拟执行多个任务
-        
+
         Args:
             tasks: 任务列表
             time_step: 时间步长
-            max_time: 最大模拟时间
-            
+            max_time: 最大模拟时间（None时自动使用任务最大deadline * 1.5）
+
         Returns:
             Dict: {task_id: 执行结果}
         """
+        # 动态计算max_time：基于任务最大deadline
+        if max_time is None and tasks:
+            max_deadline = max(t.deadline for t in tasks)
+            max_time = max_deadline * 1.5
+        elif max_time is None:
+            max_time = 50.0  # 默认值
+
         # 按优先级排序
         sorted_tasks = sorted(tasks, key=lambda t: t.priority, reverse=True)
         

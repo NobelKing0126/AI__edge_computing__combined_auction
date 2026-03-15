@@ -18,7 +18,9 @@ import os
 class UAVConfig:
     """
     UAV（无人机）相关参数配置
-    
+
+    根据experiment_params.py的设计 (平衡版V4)
+
     Attributes:
         H: 飞行高度 (m)，固定值，简化为二维部署问题
         R_cover: 覆盖半径 (m)，UAV地面覆盖范围，只有在覆盖范围内的用户才能被服务
@@ -33,10 +35,11 @@ class UAVConfig:
     """
     H: float = 100.0  # 飞行高度 (m)
     R_cover: float = 500.0  # 覆盖半径 (m)，基于场景2km×2km和5个UAV计算
-    f_max: float = 15e9  # 最大算力 15 GFLOPS = 15e9 FLOPS (优化: 从10GHz提升)
-    E_max: float = 500e3  # 电池容量 500kJ = 500e3 J
-    P_hover: float = 150.0  # 悬停功率 (W)
-    P_fly: float = 200.0  # 飞行功率 (W)
+    f_max: float = 1.5e9  # 最大算力 1.5 GFLOPS = 1.5e9 FLOPS (平衡版V3)
+
+    E_max: float = 120e3  # 电池容量 120kJ = 120e3 J (平衡版V3)
+    P_hover: float = 130.0  # 悬停功率 (W) (平衡版V3)
+    P_fly: float = 190.0  # 飞行功率 (W) (平衡版V3)
     v_fly: float = 10.0  # 飞行速度 (m/s)
     P_rx: float = 0.1  # 接收功率 (W)
     P_tx: float = 5.0  # 发射功率 (W)
@@ -44,14 +47,29 @@ class UAVConfig:
 
 
 @dataclass
+class DNNConfig:
+    """
+    DNN模型推理相关参数配置
+
+    Attributes:
+        T_inference: DNN推理时延 (s)，神经网络前向传播时间
+        T_model_load: 模型加载时延 (s)，从存储加载到内存
+        T_model_switch: 模型切换时延 (s)，切换不同模型
+    """
+    T_inference: float = 0.01      # DNN推理时延 10ms
+    T_model_load: float = 0.05     # 模型加载时延 50ms
+    T_model_switch: float = 0.02   # 模型切换时延 20ms
+
+
+@dataclass
 class ChannelConfig:
     """
-    通信信道相关参数配置
-    
+    通信信道相关参数配置 (平衡版V3)
+
     公式参考 (idea118.txt 0.8节):
         信道增益: h_{i,j} = β₀ / d_{i,j}²
         传输速率: R_{i,j} = W * log₂(1 + P_tx * h_{i,j} / (N₀ * W))
-    
+
     Attributes:
         W: 信道带宽 (Hz)
         beta_0: 参考信道增益 (1m处)
@@ -60,29 +78,29 @@ class ChannelConfig:
         R_backhaul: 回程链路带宽 (bps)
         num_channels: 可用信道数量
     """
-    W: float = 2e6  # 信道带宽 2MHz (降低以增加挑战性)
-    beta_0: float = 1e-6  # 参考信道增益 -60dB (降低以增加挑战性)
+    W: float = 0.7e6  # 信道带宽 0.7MHz (平衡版V3)
+    beta_0: float = 3.5e-7  # 参考信道增益 (平衡版V3)
     N_0: float = 1e-18  # 噪声功率谱密度 (W/Hz)
-    P_tx_user: float = 0.1  # 用户发射功率 0.1W (降低以增加挑战性)
-    R_backhaul: float = 100e6  # 回程链路带宽 100Mbps = 100e6 bps
-    num_channels: int = 10  # 可用信道数量
+    P_tx_user: float = 0.09  # 用户发射功率 0.09W (平衡版V3)
+    R_backhaul: float = 40e6  # 回程链路带宽 40Mbps = 40e6 bps (平衡版V3)
+    num_channels: int = 8  # 可用信道数量 (平衡版V3)
 
 
 @dataclass
 class CloudConfig:
     """
-    云端服务器相关参数配置
-    
+    云端服务器相关参数配置 (平衡版V5)
+
     云端资源竞争模型说明：
         - 云端总算力 F_c 被所有同时执行的任务共享
         - 每个任务分配的算力 = F_c / max(n_concurrent_tasks, 1)
         - 这反映了真实云端多租户场景的资源竞争
-    
+
     网络传播延迟说明：
         - UAV到云端的物理传播延迟（与带宽无关）
         - 典型值：边缘云 10-30ms，公有云 50-100ms
         - 包含：光纤传播延迟 + 路由器处理延迟 + 排队延迟
-    
+
     Attributes:
         F_c: 云端总算力 (FLOPS)，所有任务共享
         F_per_task_max: 单任务最大分配算力 (FLOPS)，限制单个任务的云端资源占用
@@ -90,15 +108,12 @@ class CloudConfig:
         T_propagation: UAV到云端单向传播延迟 (s)，典型值20-50ms
         max_concurrent_tasks: 云端最大并发任务数，用于计算资源竞争
     """
-    F_c: float = 500e9  # 云端总算力 500 GFLOPS = 500e9 FLOPS（共享）
-    F_per_task_max: float = 30e9  # 单任务最大分配 30 GFLOPS，增加资源竞争压力
+    F_c: float = 4.0e9  # 云端总算力 4.0 GFLOPS (平衡版V5)
+    F_per_task_max: float = 1.2e9  # 单任务最大分配 1.2 GFLOPS (平衡版V5)
     kappa_cloud: float = 1e-29  # 云端能耗系数
     # 网络传播延迟：光纤传播(~5ms/1000km) + 路由处理(~2ms/跳) + 边缘网关(~5ms)
-    # 考虑实际网络波动和拥塞，取 40ms
-    T_propagation: float = 0.04  # 单向传播延迟 40ms (合理范围: 20-100ms)
-    # 云端资源竞争：假设云端服务多个UAV集群，平均并发任务数
-    # 根据场景规模动态调整，默认值基于50用户场景的典型负载
-    max_concurrent_tasks: int = 15  # 云端同时处理的最大任务数，增加竞争
+    T_propagation: float = 0.25  # 单向传播延迟 250ms (平衡版V5)
+    max_concurrent_tasks: int = 5  # 云端同时处理的最大任务数 (平衡版V5)
 
 
 @dataclass
@@ -191,6 +206,49 @@ class AuctionConfig:
 
 
 @dataclass
+class MobilityConfig:
+    """
+    移动相关参数配置
+
+    参考 (docs/实验.txt 2.4节):
+        动态分布模式：用户位置随时间变化，移动速度1-5 m/s
+
+    参考 (docs/idea118.txt 4.11节):
+        UAV位置重定位机制
+
+    Attributes:
+        user_speed_min: 用户最小移动速度 (m/s)
+        user_speed_max: 用户最大移动速度 (m/s)
+        user_direction_change_prob: 方向改变概率
+        delta_pos: 位置失配阈值（重定位触发）
+        T_reposition: 周期重定位间隔 (s)
+        uav_fly_power: 飞行功率 (W)
+        uav_fly_speed: 飞行速度 (m/s)
+        uav_energy_reserve_ratio: 能量预留比例
+        enable_periodic_reposition: 启用周期重定位
+        enable_mismatch_trigger: 启用失配触发
+        hotspot_stay_time_range: 热点停留时间范围 (s)
+    """
+    # 用户移动参数
+    user_speed_min: float = 1.0       # 用户最小速度 (m/s)
+    user_speed_max: float = 5.0       # 用户最大速度 (m/s)
+    user_direction_change_prob: float = 0.1  # 方向改变概率
+    hotspot_stay_time_range: Tuple[float, float] = (5.0, 20.0)  # 热点停留时间
+
+    # UAV重定位参数
+    delta_pos: float = 0.3            # 位置失配阈值
+    T_reposition: float = 60.0        # 周期重定位间隔 (s)
+    uav_fly_power: float = 200.0      # 飞行功率 (W)
+    uav_fly_speed: float = 10.0       # 飞行速度 (m/s)
+    uav_energy_reserve_ratio: float = 0.1  # 能量预留比例
+
+    # 开关
+    enable_periodic_reposition: bool = True
+    enable_mismatch_trigger: bool = True
+    enable_user_mobility: bool = True
+
+
+@dataclass
 class ExecutionConfig:
     """
     执行调度相关参数配置
@@ -227,10 +285,145 @@ class ExecutionConfig:
 
 
 @dataclass
+class UserBenefitConfig:
+    """
+    用户收益模型参数配置
+
+    公式参考 (idea118.txt 1.5节):
+        服务价值: V_i = v_0 * omega_i * exp(-beta_T * T_actual)
+        用户收益: U_i = V_i - P
+        服务接受条件: U_i >= 0
+
+    Attributes:
+        v0: 基础价值系数 (元)
+        beta_T: 时延敏感度 (s^-1)
+        F_threshold: 自由能阈值
+        T_max_ref: 最大服务时延参考值 (秒)
+    """
+    v0: float = 10.0  # 基础价值系数 (元)
+    beta_T: float = 0.5  # 时延敏感度 (s^-1)
+    F_threshold: float = 30.0  # 自由能阈值
+    T_max_ref: float = 10.0  # 最大服务时延参考值 (秒)
+
+
+@dataclass
+class PricingConfig:
+    """
+    统一价格模型参数配置
+
+    公式参考 (idea118.txt 2.12节):
+        边缘算力价格: P_j^comp = c_edge^base * (exp(alpha_comp * u) - 1) * exp(gamma_F * F/F_threshold)
+        云端算力价格: P^cloud = c_cloud^base * (exp(alpha_cloud * u) - 1) * exp(gamma_F * F/F_threshold)
+
+    Attributes:
+        c_edge_base: 边缘计算基础成本 (元/GFLOPS)
+        c_cloud_base: 云端计算基础成本 (元/GFLOPS)
+        c_channel_base: 信道基础成本 (元/次)
+        c_energy_base: 能量基础成本 (元/kJ)
+        c_storage_base: 存储基础成本 (元/MB)
+        alpha_comp: 边缘算力稀缺性指数
+        alpha_cloud: 云端算力稀缺性指数
+        alpha_channel: 信道稀缺性指数
+        alpha_energy: 能量稀缺性指数
+        gamma_F: 风险溢价系数
+        F_threshold: 自由能阈值
+    """
+    # 基础成本参数
+    c_edge_base: float = 0.01  # 边缘计算基础成本 (元/GFLOPS)
+    c_cloud_base: float = 0.005  # 云端计算基础成本 (元/GFLOPS)
+    c_channel_base: float = 0.001  # 信道基础成本 (元/次)
+    c_energy_base: float = 0.05  # 能量基础成本 (元/kJ)
+    c_storage_base: float = 0.001  # 存储基础成本 (元/MB)
+
+    # 稀缺性指数
+    alpha_comp: float = 3.0  # 边缘算力稀缺性指数
+    alpha_cloud: float = 3.0  # 云端算力稀缺性指数
+    alpha_channel: float = 3.0  # 信道稀缺性指数
+    alpha_energy: float = 3.0  # 能量稀缺性指数
+
+    # 风险溢价系数
+    gamma_F: float = 0.5  # 风险溢价系数
+    F_threshold: float = 30.0  # 自由能阈值
+
+
+@dataclass
+class ConvexOptimizationConfig:
+    """
+    凸优化求解器配置参数 (修正版)
+
+    核心修正：
+        - rho = (κc/κe)^(1/3)，与计算量无关
+        - 支持5步闭式解流程
+
+    Attributes:
+        rho: 边云频率比例因子，若为None则自动计算(κc/κe)^(1/3)
+        energy_budget_mode: 能量预算计算模式
+        kappa_edge: 边缘能耗系数
+        kappa_cloud: 云端能耗系数
+        energy_budget_ratio: 单任务能量预算比例
+        comm_energy_reserve_ratio: 通信能耗预留比例
+    """
+    # rho计算参数
+    rho: Optional[float] = None  # 若为None则自动计算(κc/κe)^(1/3)
+
+    # 能量预算模式
+    energy_budget_mode: str = "min_divide_ratio"  # min_divide_ratio 或 fixed_ratio
+
+    # 能耗系数
+    kappa_edge: float = 1e-28
+    kappa_cloud: float = 1e-29
+
+    # 预算比例
+    energy_budget_ratio: float = 0.3
+    comm_energy_reserve_ratio: float = 0.2
+
+    # 数值稳定性
+    min_compute: float = 1e6  # 最小计算量 (FLOPS)
+    min_frequency: float = 1e6  # 最小频率 (Hz)
+
+
+@dataclass
+class NormalizationConfig:
+    """
+    归一化配置参数
+
+    用于价格归一化和时延基准计算
+
+    Attributes:
+        price_normalization_divisor: 价格归一化除数（资源类型数）
+        reference_compute_power: 参考计算能力 (FLOPS)
+        reference_bandwidth: 参考带宽 (bps)
+    """
+    # 价格归一化
+    price_normalization_divisor: int = 4  # 4种资源类型：算力、云算力、信道、能量
+
+    # 时延基准参考值
+    reference_compute_power: float = 10e9  # 10 GFLOPS
+    reference_bandwidth: float = 100e6  # 100 Mbps
+
+
+@dataclass
+class UtilityWeights:
+    """
+    综合效用权重配置
+
+    公式: η = β1*U_time + β2*U_energy + β3*U_reliability
+
+    Attributes:
+        beta_time: 时延效用权重
+        beta_energy: 能效效用权重
+        beta_reliability: 可靠性效用权重
+    """
+    beta_time: float = 0.45
+    beta_energy: float = 0.25
+    beta_reliability: float = 0.30
+
+
+@dataclass
 class ScenarioConfig:
     """
     场景相关参数配置
-    
+
     Attributes:
         scene_width: 场景宽度 (m)
         scene_height: 场景高度 (m)
@@ -251,19 +444,20 @@ class ScenarioConfig:
 class SystemConfig:
     """
     系统总配置类，整合所有子配置
-    
+
     Usage:
         # 使用默认配置
         config = SystemConfig()
-        
+
         # 从YAML文件加载
         config = SystemConfig.from_yaml("config.yaml")
-        
+
         # 访问参数
         print(config.uav.f_max)  # UAV最大算力
         print(config.channel.W)  # 信道带宽
     """
     uav: UAVConfig = field(default_factory=UAVConfig)
+    dnn: DNNConfig = field(default_factory=DNNConfig)
     channel: ChannelConfig = field(default_factory=ChannelConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
     energy: EnergyConfig = field(default_factory=EnergyConfig)
@@ -272,6 +466,17 @@ class SystemConfig:
     auction: AuctionConfig = field(default_factory=AuctionConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     scenario: ScenarioConfig = field(default_factory=ScenarioConfig)
+    mobility: MobilityConfig = field(default_factory=MobilityConfig)
+    user_benefit: UserBenefitConfig = field(default_factory=UserBenefitConfig)
+    pricing: PricingConfig = field(default_factory=PricingConfig)
+
+    # 新增配置 (修正版V2)
+    convex_optimization: ConvexOptimizationConfig = field(default_factory=ConvexOptimizationConfig)
+    normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
+    utility_weights: UtilityWeights = field(default_factory=UtilityWeights)
+
+    # V2模型启用开关
+    use_v2_models: bool = False
     
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "SystemConfig":
@@ -344,7 +549,45 @@ class SystemConfig:
                     if key in ['tau_max_range', 'user_level_range'] and isinstance(value, list):
                         value = tuple(value)
                     setattr(config.scenario, key, value)
-        
+
+        if 'mobility' in data:
+            for key, value in data['mobility'].items():
+                if hasattr(config.mobility, key):
+                    # 处理元组类型
+                    if key == 'hotspot_stay_time_range' and isinstance(value, list):
+                        value = tuple(value)
+                    setattr(config.mobility, key, value)
+
+        if 'user_benefit' in data:
+            for key, value in data['user_benefit'].items():
+                if hasattr(config.user_benefit, key):
+                    setattr(config.user_benefit, key, value)
+
+        if 'pricing' in data:
+            for key, value in data['pricing'].items():
+                if hasattr(config.pricing, key):
+                    setattr(config.pricing, key, value)
+
+        # 新增配置加载 (V2)
+        if 'convex_optimization' in data:
+            for key, value in data['convex_optimization'].items():
+                if hasattr(config.convex_optimization, key):
+                    setattr(config.convex_optimization, key, value)
+
+        if 'normalization' in data:
+            for key, value in data['normalization'].items():
+                if hasattr(config.normalization, key):
+                    setattr(config.normalization, key, value)
+
+        if 'utility_weights' in data:
+            for key, value in data['utility_weights'].items():
+                if hasattr(config.utility_weights, key):
+                    setattr(config.utility_weights, key, value)
+
+        # V2模型开关
+        if 'use_v2_models' in data:
+            config.use_v2_models = data['use_v2_models']
+
         return config
     
     def to_yaml(self, yaml_path: str) -> None:
@@ -367,7 +610,18 @@ class SystemConfig:
                 **self.scenario.__dict__,
                 'tau_max_range': list(self.scenario.tau_max_range),
                 'user_level_range': list(self.scenario.user_level_range)
-            }
+            },
+            'mobility': {
+                **self.mobility.__dict__,
+                'hotspot_stay_time_range': list(self.mobility.hotspot_stay_time_range)
+            },
+            'user_benefit': self.user_benefit.__dict__,
+            'pricing': self.pricing.__dict__,
+            # 新增配置 (V2)
+            'convex_optimization': self.convex_optimization.__dict__,
+            'normalization': self.normalization.__dict__,
+            'utility_weights': self.utility_weights.__dict__,
+            'use_v2_models': self.use_v2_models
         }
         
         with open(yaml_path, 'w', encoding='utf-8') as f:
@@ -484,6 +738,16 @@ class SystemConfig:
   时延: {self.bidding.beta_time}
   能效: {self.bidding.beta_energy}
   可靠性: {self.bidding.beta_reliability}
+
+【用户收益参数】
+  基础价值系数: {self.user_benefit.v0} 元
+  时延敏感度: {self.user_benefit.beta_T} s^-1
+  自由能阈值: {self.user_benefit.F_threshold}
+
+【价格参数】
+  边缘基础成本: {self.pricing.c_edge_base} 元/GFLOPS
+  云端基础成本: {self.pricing.c_cloud_base} 元/GFLOPS
+  风险溢价系数: {self.pricing.gamma_F}
 
 ====================================
 """

@@ -373,7 +373,173 @@ class BidGenerator:
         )
 
         return utility_stage2, utility_final
-    
+
+    # ============ V2修正版方法 ============
+
+    def compute_adaptive_delay_baseline(
+        self,
+        C_total: float,
+        D_trans: float,
+        f_ref: float = 10e9,
+        R_ref: float = 100e6
+    ) -> float:
+        """
+        计算自适应时延基准 (修正版V2)
+
+        T_baseline = C_total / f_ref + D_trans / R_ref
+
+        修正要点:
+        - 时延基准根据任务特征（计算量、数据量）自适应
+        - 不使用硬编码的固定值
+
+        Args:
+            C_total: 总计算量 (FLOPs)
+            D_trans: 传输数据量 (bits)
+            f_ref: 参考计算能力 (FLOPS)，默认10 GFLOPS
+            R_ref: 参考带宽 (bps)，默认100 Mbps
+
+        Returns:
+            float: 时延基准 (秒)
+        """
+        T_compute_ref = C_total / max(f_ref, NUMERICAL.EPSILON)
+        T_trans_ref = D_trans / max(R_ref, NUMERICAL.EPSILON)
+
+        return T_compute_ref + T_trans_ref
+
+    def compute_normalized_delay_ratio(
+        self,
+        T_actual: float,
+        C_total: float,
+        D_trans: float,
+        f_ref: float = 10e9,
+        R_ref: float = 100e6
+    ) -> float:
+        """
+        计算归一化时延比率 (修正版V2)
+
+        τ = T_actual / T_baseline
+
+        Args:
+            T_actual: 实际时延 (秒)
+            C_total: 总计算量 (FLOPs)
+            D_trans: 传输数据量 (bits)
+            f_ref: 参考计算能力 (FLOPS)
+            R_ref: 参考带宽 (bps)
+
+        Returns:
+            float: 归一化时延比率
+        """
+        T_baseline = self.compute_adaptive_delay_baseline(C_total, D_trans, f_ref, R_ref)
+
+        if T_baseline <= 0:
+            return 1.0
+
+        return T_actual / T_baseline
+
+    def compute_delay_utility(
+        self,
+        T_actual: float,
+        C_total: float,
+        D_trans: float,
+        beta: float = 0.5,
+        f_ref: float = 10e9,
+        R_ref: float = 100e6
+    ) -> float:
+        """
+        计算时延效用 (修正版V2)
+
+        U_time = exp(-β * τ)
+
+        其中 τ = T_actual / T_baseline
+
+        修正要点:
+        - 使用相对时延而非绝对时延
+        - 效用对任务特征自适应
+
+        Args:
+            T_actual: 实际时延 (秒)
+            C_total: 总计算量 (FLOPs)
+            D_trans: 传输数据量 (bits)
+            beta: 时延敏感度 (默认0.5)
+            f_ref: 参考计算能力 (FLOPS)
+            R_ref: 参考带宽 (bps)
+
+        Returns:
+            float: 时延效用 (0-1)
+        """
+        tau = self.compute_normalized_delay_ratio(T_actual, C_total, D_trans, f_ref, R_ref)
+
+        # 指数衰减效用
+        U_time = np.exp(-beta * tau)
+
+        return U_time
+
+    def compute_comprehensive_utility_v2(
+        self,
+        T_actual: float,
+        C_total: float,
+        D_trans: float,
+        E_actual: float,
+        E_budget: float,
+        reliability: float = 1.0,
+        beta_time: float = 0.45,
+        beta_energy: float = 0.25,
+        beta_reliability: float = 0.30,
+        beta_delay: float = 0.5,
+        f_ref: float = 10e9,
+        R_ref: float = 100e6
+    ) -> float:
+        """
+        计算综合效用 (修正版V2)
+
+        η = β1*U_time + β2*U_energy + β3*U_reliability
+
+        修正要点:
+        - U_time使用归一化时延比率
+        - 权重默认(0.45, 0.25, 0.30)
+
+        Args:
+            T_actual: 实际时延 (秒)
+            C_total: 总计算量 (FLOPs)
+            D_trans: 传输数据量 (bits)
+            E_actual: 实际能耗 (焦耳)
+            E_budget: 能量预算 (焦耳)
+            reliability: 可靠性得分 (0-1)
+            beta_time: 时延效用权重 (默认0.45)
+            beta_energy: 能效效用权重 (默认0.25)
+            beta_reliability: 可靠性效用权重 (默认0.30)
+            beta_delay: 时延敏感度 (默认0.5)
+            f_ref: 参考计算能力 (FLOPS)
+            R_ref: 参考带宽 (bps)
+
+        Returns:
+            float: 综合效用值 (0-1)
+        """
+        # 时延效用 (基于归一化时延比率)
+        U_time = self.compute_delay_utility(
+            T_actual, C_total, D_trans, beta_delay, f_ref, R_ref
+        )
+
+        # 能效效用
+        U_energy = max(0, 1 - E_actual / max(E_budget, NUMERICAL.EPSILON))
+
+        # 可靠性效用
+        U_reliability = np.clip(reliability, 0.0, 1.0)
+
+        # 加权综合效用
+        utility = (
+            beta_time * U_time +
+            beta_energy * U_energy +
+            beta_reliability * U_reliability
+        )
+
+        # 归一化 (权重和应为1)
+        total_weight = beta_time + beta_energy + beta_reliability
+        if total_weight > 0:
+            utility = utility / total_weight
+
+        return utility
+
     def determine_checkpoint(self,
                              free_energy: FreeEnergyResult,
                              split_layer: int,

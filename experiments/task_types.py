@@ -255,38 +255,91 @@ class TaskTypeConfig:
 
 
 # 延迟敏感型任务配置
-# MobileNetV2: 0.3 GFLOPs/图片 × 5-20张 = 1.5-6 GFLOPs
-# UAV 15 GFLOPS: 0.1-0.4秒计算，加上上传~0.2秒
-# 云端 30 GFLOPS: 0.05-0.2秒计算
-# deadline设为0.5-1.5秒使边缘/云端协同处理有一定失败率
-LATENCY_SENSITIVE_CONFIG = TaskTypeConfig(
+# V12调整: 为小规模和大规模实验分别配置
+# 目标: 成功率60-90%，用户扩展呈下降趋势，UAV扩展呈上升趋势
+# 关键调整: V24 - 中间复杂度，目标成功率60-90%
+
+# 小规模实验任务配置（V24: 目标成功率65-85%）
+# MobileNetV2 0.3 GFLOPS/image, UAV 50 GFLOPS
+# 10-25 images = 3-7.5 GFLOPS
+# 单UAV处理约 0.06-0.15秒
+LATENCY_SENSITIVE_CONFIG_SMALL = TaskTypeConfig(
     task_type=TaskType.LATENCY_SENSITIVE,
     model_spec=MOBILENETV2_SPEC,
-    min_images=10,         # ← 修改为10（原5）- 复杂度增加
-    max_images=50,         # ← 修改为50（原20）- 每任务更多图片
-    min_deadline=0.5,
-    max_deadline=1.5,
+    min_images=10,
+    max_images=25,
+    min_deadline=8.0,
+    max_deadline=16.0,
     min_priority=0.6,
     max_priority=0.9,
-    description="延迟敏感型任务（MobileNetV2，每任务10-50张图片，严格deadline）"
+    description="Latency-Sensitive-Small (MobileNetV2, 10-25 images, 8-16s deadline)"
 )
 
-# 计算密集型任务配置
-# VGG16 (MNIST适配): 0.5 GFLOPs/图片 × 10-100张 = 5-50 GFLOPs
-# UAV 15 GFLOPS: 0.7-1.7秒计算
-# 云端 30 GFLOPS: 0.3-0.8秒计算
-# deadline设为1.0-3.0秒使云端协同处理有一定失败率
-COMPUTE_INTENSIVE_CONFIG = TaskTypeConfig(
+# MobileNetV2 0.3 GFLOPS/image, UAV 50 GFLOPS
+# 20-40 images = 6-12 GFLOPS
+# 单UAV处理约 0.12-0.24秒
+COMPUTE_INTENSIVE_CONFIG_SMALL = TaskTypeConfig(
     task_type=TaskType.COMPUTE_INTENSIVE,
-    model_spec=VGG16_SPEC,
-    min_images=10,         # ← 修改为10（原20）- 复杂度增加
-    max_images=100,        # ← 修改为100（原50）- 每任务更多图片
-    min_deadline=1.0,
-    max_deadline=3.0,
+    model_spec=MOBILENETV2_SPEC,
+    min_images=20,
+    max_images=40,
+    min_deadline=20.0,
+    max_deadline=40.0,
     min_priority=0.3,
     max_priority=0.6,
-    description="计算密集型任务（VGG16，每任务10-100张图片，紧凑deadline）"
+    description="Compute-Intensive-Small (MobileNetV2, 20-40 images, 20-40s deadline)"
 )
+
+# 大规模实验任务配置（V24: 目标成功率60-80%）
+# MobileNetV2 0.3 GFLOPS/image, UAV 60 GFLOPS
+# 12-30 images = 3.6-9 GFLOPS
+# 单UAV处理约 0.06-0.15秒
+LATENCY_SENSITIVE_CONFIG_LARGE = TaskTypeConfig(
+    task_type=TaskType.LATENCY_SENSITIVE,
+    model_spec=MOBILENETV2_SPEC,
+    min_images=12,
+    max_images=30,
+    min_deadline=10.0,
+    max_deadline=20.0,
+    min_priority=0.6,
+    max_priority=0.9,
+    description="Latency-Sensitive-Large (MobileNetV2, 12-30 images, 10-20s deadline)"
+)
+
+# MobileNetV2 0.3 GFLOPS/image, UAV 60 GFLOPS
+# 25-50 images = 7.5-15 GFLOPS
+# 单UAV处理约 0.125-0.25秒
+COMPUTE_INTENSIVE_CONFIG_LARGE = TaskTypeConfig(
+    task_type=TaskType.COMPUTE_INTENSIVE,
+    model_spec=MOBILENETV2_SPEC,
+    min_images=25,
+    max_images=50,
+    min_deadline=25.0,
+    max_deadline=50.0,
+    min_priority=0.3,
+    max_priority=0.6,
+    description="Compute-Intensive-Large (MobileNetV2, 25-50 images, 25-50s deadline)"
+)
+
+# 默认配置（向后兼容）- 使用大规模配置作为默认
+LATENCY_SENSITIVE_CONFIG = LATENCY_SENSITIVE_CONFIG_LARGE
+COMPUTE_INTENSIVE_CONFIG = COMPUTE_INTENSIVE_CONFIG_LARGE
+
+
+def get_task_configs_for_scale(is_small_scale: bool) -> tuple:
+    """
+    根据场景规模获取任务配置
+
+    Args:
+        is_small_scale: 是否为小规模场景 (200m×200m)
+
+    Returns:
+        (latency_config, compute_config)
+    """
+    if is_small_scale:
+        return LATENCY_SENSITIVE_CONFIG_SMALL, COMPUTE_INTENSIVE_CONFIG_SMALL
+    else:
+        return LATENCY_SENSITIVE_CONFIG_LARGE, COMPUTE_INTENSIVE_CONFIG_LARGE
 
 
 # ============ 任务生成器 ============
@@ -329,76 +382,88 @@ class Task:
 class MNISTTaskGenerator:
     """
     基于MNIST的任务生成器
-    
+
     生成延迟敏感型和计算密集型混合任务
+    支持小规模和大规模场景的不同任务配置
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  area_size: float = 200.0,
                  latency_ratio: float = 0.5,
                  tasks_per_user: int = 5,
-                 seed: int = None):
+                 seed: int = None,
+                 is_small_scale: bool = None):
         """
         初始化任务生成器
-        
+
         Args:
             area_size: 区域大小（米）
             latency_ratio: 延迟敏感型任务比例 (0-1)
             tasks_per_user: 每个用户提交的任务数量 (默认5)
             seed: 随机种子
+            is_small_scale: 是否为小规模场景（自动根据area_size判断）
         """
         self.area_size = area_size
         self.latency_ratio = latency_ratio
         self.tasks_per_user = tasks_per_user
         self.seed = seed
-        
+
+        # 自动判断规模（area_size <= 300m 为小规模）
+        if is_small_scale is None:
+            self.is_small_scale = area_size <= 300.0
+        else:
+            self.is_small_scale = is_small_scale
+
         if seed is not None:
             np.random.seed(seed)
-    
+
     def generate_tasks(self, n_users: int, seed: int = None) -> List[Task]:
         """
         生成任务列表
-        
+
         每个用户生成 tasks_per_user 个任务
         总任务数 = n_users × tasks_per_user
-        
+
         Args:
             n_users: 用户数量
             seed: 随机种子
-            
+
         Returns:
             任务列表
         """
         if seed is not None:
             np.random.seed(seed)
-        
+
+        # 根据规模获取任务配置
+        latency_config, compute_config = get_task_configs_for_scale(self.is_small_scale)
+
         tasks = []
         task_id = 0
-        
+
         for user_id in range(n_users):
             # 用户位置（同一用户的所有任务共享位置）
             user_x = np.random.uniform(0, self.area_size)
             user_y = np.random.uniform(0, self.area_size)
-            
+
             # 每个用户生成多个任务
             for _ in range(self.tasks_per_user):
                 # 随机决定任务类型
                 is_latency_sensitive = np.random.random() < self.latency_ratio
-                
+
                 if is_latency_sensitive:
-                    config = LATENCY_SENSITIVE_CONFIG
+                    config = latency_config
                 else:
-                    config = COMPUTE_INTENSIVE_CONFIG
-                
+                    config = compute_config
+
                 # 随机生成参数
                 n_images = np.random.randint(config.min_images, config.max_images + 1)
                 deadline = np.random.uniform(config.min_deadline, config.max_deadline)
                 priority = np.random.uniform(config.min_priority, config.max_priority)
-                
+
                 # 计算数据大小和FLOPs
                 data_size = compute_input_data_size(n_images)
                 total_flops = config.model_spec.get_flops_for_images(n_images)
-                
+
                 task = Task(
                     task_id=task_id,
                     user_id=user_id,
@@ -413,10 +478,10 @@ class MNISTTaskGenerator:
                     user_y=user_y,
                     model_spec=config.model_spec
                 )
-                
+
                 tasks.append(task)
                 task_id += 1
-        
+
         return tasks
     
     def generate_batch(self, n_users: int, n_batches: int = 1, seed: int = None) -> List[List[Task]]:
@@ -463,15 +528,18 @@ class MNISTTaskGenerator:
         """
         tasks = []
 
+        # 根据实例的is_small_scale选择正确的配置
+        latency_config, compute_config = get_task_configs_for_scale(self.is_small_scale)
+
         for task_dict in task_queue:
             # 确定任务类型和配置
             task_type_str = task_dict.get('task_type', 'latency_sensitive')
 
             if task_type_str == 'latency_sensitive':
-                config = LATENCY_SENSITIVE_CONFIG
+                config = latency_config
                 task_type = TaskType.LATENCY_SENSITIVE
             else:
-                config = COMPUTE_INTENSIVE_CONFIG
+                config = compute_config
                 task_type = TaskType.COMPUTE_INTENSIVE
 
             # 从任务队列中提取参数

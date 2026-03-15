@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Import task type configs
 from experiments.task_types import (
     LATENCY_SENSITIVE_CONFIG, COMPUTE_INTENSIVE_CONFIG,
-    MOBILENETV2_SPEC, VGG16_SPEC
+    MOBILENETV2_SPEC, VGG16_SPEC,
+    get_task_configs_for_scale
 )
 
 
@@ -431,30 +432,38 @@ class TaskQueueGenerator:
         """
         user_configs = []
 
+        # 获取规模特定的任务配置
+        # 优先从task_generator获取is_small_scale属性
+        is_small_scale = True  # 默认小规模
+        if hasattr(self.config.task_generator, 'is_small_scale'):
+            is_small_scale = self.config.task_generator.is_small_scale
+
+        latency_config, compute_config = get_task_configs_for_scale(is_small_scale)
+
         # 计算总任务数
         total_tasks = n_users * self.config.task_generator.tasks_per_user
 
         # 分配任务类型（循环分配延迟敏感型和计算密集型）
         for user_id in range(n_users):
             if user_id % 2 == 0:
-                # 延迟敏感型任务（使用MobileNetV2）
+                # 延迟敏感型任务
                 task_config = {
                     'task_type': 'latency_sensitive',
-                    'model_spec': MOBILENETV2_SPEC,
-                    'n_images_range': (LATENCY_SENSITIVE_CONFIG.min_images,
-                                      LATENCY_SENSITIVE_CONFIG.max_images),
-                    'deadline_range': (LATENCY_SENSITIVE_CONFIG.min_deadline,
-                                      LATENCY_SENSITIVE_CONFIG.max_deadline),
+                    'model_spec': latency_config.model_spec,
+                    'n_images_range': (latency_config.min_images,
+                                      latency_config.max_images),
+                    'deadline_range': (latency_config.min_deadline,
+                                      latency_config.max_deadline),
                 }
             else:
-                # 计算密集型任务（使用VGG16）
+                # 计算密集型任务
                 task_config = {
                     'task_type': 'compute_intensive',
-                    'model_spec': VGG16_SPEC,
-                    'n_images_range': (COMPUTE_INTENSIVE_CONFIG.min_images,
-                                      COMPUTE_INTENSIVE_CONFIG.max_images),
-                    'deadline_range': (COMPUTE_INTENSIVE_CONFIG.min_deadline,
-                                      COMPUTE_INTENSIVE_CONFIG.max_deadline),
+                    'model_spec': compute_config.model_spec,
+                    'n_images_range': (compute_config.min_images,
+                                      compute_config.max_images),
+                    'deadline_range': (compute_config.min_deadline,
+                                      compute_config.max_deadline),
                 }
 
             user_configs.append(task_config)

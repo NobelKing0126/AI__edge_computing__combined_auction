@@ -8,12 +8,17 @@ M03: User - 用户与任务模型
 关键参数 (idea118.txt 0.3节):
     Task_i = (ModelID_i, InputSize_i, L_cut, τ_max, UserLevel)
     pos_i = (x_i, y_i) ∈ R²
+
+移动支持 (docs/实验.txt 2.4节):
+    动态分布模式：用户位置随时间变化，移动速度1-5 m/s
 """
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Set
 from enum import Enum, auto
 import numpy as np
+
+from models.mobility import MobilityPattern, UserMobilityState
 
 
 class TaskState(Enum):
@@ -136,27 +141,35 @@ class Task:
 class User:
     """
     用户实体
-    
+
     Attributes:
         user_id: 用户唯一标识
         x: x坐标 (m)
         y: y坐标 (m)
         task: 用户的DNN任务
-        
+
+        # 移动状态 (docs/实验.txt 2.4节)
+        mobility_state: 移动状态对象
+
         # 统计信息
         tasks_completed: 已完成任务数
         tasks_failed: 失败任务数
         total_delay: 累计时延
+        total_distance: 累计移动距离
     """
     user_id: int
     x: float  # 位置x坐标 (m)
     y: float  # 位置y坐标 (m)
     task: Optional[Task] = None
-    
+
+    # 移动状态
+    mobility_state: Optional[UserMobilityState] = None
+
     # 统计信息
     tasks_completed: int = 0
     tasks_failed: int = 0
     total_delay: float = 0.0
+    total_distance: float = 0.0  # 累计移动距离
     
     @property
     def position(self) -> Tuple[float, float]:
@@ -179,20 +192,192 @@ class User:
     def distance_to_3d(self, other_x: float, other_y: float, height: float) -> float:
         """
         计算到UAV的三维距离
-        
+
         公式: d_{i,j} = sqrt((x_i-x_j)² + (y_i-y_j)² + H²)
-        
+
         Args:
             other_x: UAV x坐标
             other_y: UAV y坐标
             height: UAV飞行高度
-            
+
         Returns:
             float: 三维欧氏距离 (m)
         """
-        return np.sqrt((self.x - other_x) ** 2 + 
-                      (self.y - other_y) ** 2 + 
+        return np.sqrt((self.x - other_x) ** 2 +
+                      (self.y - other_y) ** 2 +
                       height ** 2)
+
+    # ============ 移动相关方法 ============
+
+    def initialize_mobility(self,
+                            pattern: MobilityPattern = MobilityPattern.STATIC,
+                            speed: float = 0.0,
+                            scene_width: float = 2000.0,
+                            scene_height: float = 2000.0,
+                            hotspots: Optional[List[Tuple[float, float]]] = None,
+                            seed: Optional[int] = None) -> None:
+        """
+        初始化移动状态
+
+        Args:
+            pattern: 移动模式
+            speed: 移动速度 (m/s)，范围1-5 m/s (docs/实验.txt)
+            scene_width: 场景宽度 (m)
+            scene_height: 场景高度 (m)
+            hotspots: 热点位置列表 [(x, y), ...]
+            seed: 随机种子
+        """
+        self.mobility_state = UserMobilityState(
+            pattern=pattern,
+            speed=speed,
+            scene_width=scene_width,
+            scene_height=scene_height,
+            hotspots=hotspots or [],
+            rng=np.random.default_rng(seed)
+        )
+
+    def update_position(self, dt: float) -> Tuple[float, float]:
+        """
+        根据移动模式更新位置
+
+        参考 (docs/实验.txt 2.4节):
+            动态分布模式：用户位置随时间变化，移动速度1-5 m/s
+
+        Args:
+            dt: 时间步长 (s)
+
+        Returns:
+            Tuple[float, float]: (新x坐标, 新y坐标)
+        """
+        if self.mobility_state is None:
+            return (self.x, self.y)
+
+        if self.mobility_state.pattern == MobilityPattern.STATIC:
+            return (self.x, self.y)
+
+        old_x, old_y = self.x, self.y
+
+        if self.mobility_state.pattern == MobilityPattern.RANDOM_WALK:
+            new_x, new_y = self._random_walk(dt)
+        elif self.mobility_state.pattern == MobilityPattern.HOTSPOT_MIGRATION:
+            new_x, new_y = self._hotspot_migration(dt)
+        else:
+            return (self.x, self.y)
+
+        # 更新位置
+        self.x = new_x
+        self.y = new_y
+
+        # 累计移动距离
+        distance = np.sqrt((self.x - old_x) ** 2 + (self.y - old_y) ** 2)
+        self.total_distance += distance
+
+        return (self.x, self.y)
+
+    def _random_walk(self, dt: float) -> Tuple[float, float]:
+        """
+        随机游走移动
+
+        参考 (docs/实验.txt 2.4节):
+            移动速度1-5 m/s
+
+        公式:
+            dx = speed * cos(direction) * dt
+            dy = speed * sin(direction) * dt
+
+        Args:
+            dt: 时间步长 (s)
+
+        Returns:
+            Tuple[float, float]: (新x坐标, 新y坐标)
+        """
+        state = self.mobility_state
+        speed = state.speed
+
+        # 每隔一段时间改变方向（模拟更真实的移动）
+        if state.rng.random() < 0.1:  # 10%概率改变方向
+            state.direction = state.rng.uniform(0, 2 * np.pi)
+
+        # 计算位移
+        dx = speed * np.cos(state.direction) * dt
+        dy = speed * np.sin(state.direction) * dt
+
+        new_x = self.x + dx
+        new_y = self.y + dy
+
+        # 边界处理：反弹
+        if new_x < 0:
+            new_x = -new_x
+            state.direction = np.pi - state.direction
+        elif new_x > state.scene_width:
+            new_x = 2 * state.scene_width - new_x
+            state.direction = np.pi - state.direction
+
+        if new_y < 0:
+            new_y = -new_y
+            state.direction = -state.direction
+        elif new_y > state.scene_height:
+            new_y = 2 * state.scene_height - new_y
+            state.direction = -state.direction
+
+        # 确保在边界内
+        new_x = np.clip(new_x, 0, state.scene_width)
+        new_y = np.clip(new_y, 0, state.scene_height)
+
+        return (new_x, new_y)
+
+    def _hotspot_migration(self, dt: float) -> Tuple[float, float]:
+        """
+        热点迁移移动
+
+        用户向最近的热点移动，到达后可能切换到下一个热点
+
+        Args:
+            dt: 时间步长 (s)
+
+        Returns:
+            Tuple[float, float]: (新x坐标, 新y坐标)
+        """
+        state = self.mobility_state
+
+        if not state.hotspots:
+            # 无热点则退化为随机游走
+            return self._random_walk(dt)
+
+        # 选择目标热点
+        if state.target_hotspot_idx is None or state.hotspot_arrival_time <= 0:
+            # 选择下一个热点
+            state.target_hotspot_idx = state.rng.integers(0, len(state.hotspots))
+            state.hotspot_arrival_time = state.rng.uniform(5.0, 20.0)  # 在热点停留5-20秒
+
+        target = state.hotspots[state.target_hotspot_idx]
+
+        # 计算到热点的方向
+        dx = target[0] - self.x
+        dy = target[1] - self.y
+        dist = np.sqrt(dx ** 2 + dy ** 2)
+
+        if dist < 10.0:  # 到达热点（10m内）
+            # 在热点停留
+            state.hotspot_arrival_time -= dt
+            return (self.x, self.y)
+
+        # 向热点移动
+        speed = state.speed
+        move_dist = speed * dt
+
+        if move_dist >= dist:
+            new_x, new_y = target
+        else:
+            ratio = move_dist / dist
+            new_x = self.x + dx * ratio
+            new_y = self.y + dy * ratio
+
+        # 边界检查
+        new_x = np.clip(new_x, 0, state.scene_width)
+        new_y = np.clip(new_y, 0, state.scene_height)
+
+        return (new_x, new_y)
 
 
 class UserGenerator:

@@ -59,6 +59,33 @@ class UtilizationInfo:
     load_count: int
 
 
+@dataclass
+class ResourcePricesV2:
+    """
+    资源价格 V2 (修正版)
+
+    扩展字段用于动态定价反馈
+
+    Attributes:
+        compute_prices: 各UAV的边缘算力价格 {uav_id: price}
+        cloud_price: 云端算力价格
+        energy_prices: 各UAV的能量价格 {uav_id: price}
+        channel_prices: 各UAV的信道价格 {uav_id: price}
+        utilization: 各UAV的利用率信息 {uav_id: {compute, energy, channel}}
+        health_status: 各UAV的健康状态 {uav_id: health_score}
+        loaded_models: 各UAV加载的模型 {uav_id: [model_ids]}
+        timestamp: 时间戳
+    """
+    compute_prices: Dict[int, float]
+    cloud_price: float
+    energy_prices: Dict[int, float]
+    channel_prices: Dict[int, float]
+    utilization: Dict[int, Dict[str, float]]
+    health_status: Dict[int, float]
+    loaded_models: Dict[int, List[int]]
+    timestamp: float
+
+
 class DynamicPricingManager:
     """
     动态定价管理器
@@ -259,6 +286,171 @@ class DynamicPricingManager:
             'compute_change': (history[-1].p_compute / history[0].p_compute - 1) * 100,
             'energy_change': (history[-1].p_energy / history[0].p_energy - 1) * 100
         }
+
+    # ============ V2修正版方法 ============
+
+    def smooth_price(
+        self,
+        p_new: float,
+        p_old: float,
+        lambda_: float = None
+    ) -> float:
+        """
+        价格平滑 (修正版V2)
+
+        P_smooth = λ * P_new + (1-λ) * P_old
+
+        Args:
+            p_new: 新计算的价格
+            p_old: 旧价格
+            lambda_: 平滑系数，默认0.3
+
+        Returns:
+            float: 平滑后的价格
+        """
+        if lambda_ is None:
+            lambda_ = self.smooth_lambda
+
+        return lambda_ * p_new + (1 - lambda_) * p_old
+
+    def compute_realtime_utilization(
+        self,
+        uav_id: int,
+        f_used: float,
+        f_max: float,
+        E_used: float,
+        E_max: float,
+        channel_used: float,
+        channel_max: float
+    ) -> Dict[str, float]:
+        """
+        计算实时利用率 (修正版V2)
+
+        Args:
+            uav_id: UAV ID
+            f_used: 已用算力
+            f_max: 最大算力
+            E_used: 已用能量
+            E_max: 最大能量
+            channel_used: 已用信道
+            channel_max: 最大信道容量
+
+        Returns:
+            Dict[str, float]: 各资源利用率
+        """
+        compute_util = f_used / max(f_max, 1e-9)
+        energy_util = E_used / max(E_max, 1e-9)
+        channel_util = channel_used / max(channel_max, 1e-9)
+
+        return {
+            'compute': np.clip(compute_util, 0.0, 1.0),
+            'energy': np.clip(energy_util, 0.0, 1.0),
+            'channel': np.clip(channel_util, 0.0, 1.0)
+        }
+
+    def update_all_prices_v2(
+        self,
+        uav_states: Dict[int, Dict],
+        cloud_utilization: float,
+        current_time: float,
+        health_status: Dict[int, float] = None,
+        loaded_models: Dict[int, List[int]] = None
+    ) -> ResourcePricesV2:
+        """
+        更新所有价格 (修正版V2)
+
+        返回ResourcePricesV2结构，包含完整的价格和状态信息
+
+        Args:
+            uav_states: UAV状态字典 {uav_id: {f_used, f_max, E_used, E_max, ...}}
+            cloud_utilization: 云端利用率
+            current_time: 当前时间
+            health_status: 健康状态 {uav_id: health_score}
+            loaded_models: 加载的模型 {uav_id: [model_ids]}
+
+        Returns:
+            ResourcePricesV2: 完整的价格信息
+        """
+        compute_prices = {}
+        energy_prices = {}
+        channel_prices = {}
+        utilization_info = {}
+
+        for uav_id, state in uav_states.items():
+            # 计算利用率
+            utils = self.compute_realtime_utilization(
+                uav_id,
+                state.get('f_used', 0),
+                state.get('f_max', 1e9),
+                state.get('E_used', 0),
+                state.get('E_max', 500e3),
+                state.get('channel_used', 0),
+                state.get('channel_max', 10e6)
+            )
+            utilization_info[uav_id] = utils
+
+            # 获取旧价格
+            old_prices = self.uav_prices.get(uav_id)
+            if old_prices is None:
+                # 初始化价格
+                self.initialize_prices([uav_id])
+                old_prices = self.uav_prices[uav_id]
+
+            # 计算新价格
+            compute_delta = utils['compute'] - self.util_target
+            new_p_compute = old_prices.p_compute * (1 + self.gamma_compute * compute_delta)
+            new_p_compute = max(new_p_compute, PRICING.MIN_COMPUTE_PRICE)
+
+            energy_delta = utils['energy'] - self.util_target
+            new_p_energy = old_prices.p_energy * (1 + self.gamma_energy * energy_delta)
+            new_p_energy = max(new_p_energy, PRICING.MIN_ENERGY_PRICE)
+
+            channel_delta = utils['channel'] - self.util_target
+            if channel_delta > 0:
+                new_p_channel = old_prices.p_channel * (1 + self.gamma_channel_up * channel_delta)
+            else:
+                new_p_channel = old_prices.p_channel * (1 + self.gamma_channel_down * channel_delta)
+            new_p_channel = max(new_p_channel, PRICING.MIN_CHANNEL_PRICE)
+
+            # 平滑处理
+            p_compute_smooth = self.smooth_price(new_p_compute, old_prices.p_compute)
+            p_energy_smooth = self.smooth_price(new_p_energy, old_prices.p_energy)
+            p_channel_smooth = self.smooth_price(new_p_channel, old_prices.p_channel)
+
+            # 更新存储
+            self.uav_prices[uav_id] = ResourcePrices(
+                p_compute=p_compute_smooth,
+                p_energy=p_energy_smooth,
+                p_channel=p_channel_smooth,
+                timestamp=current_time
+            )
+            self.price_history[uav_id].append(self.uav_prices[uav_id])
+            self.last_update_time[uav_id] = current_time
+
+            # 收集结果
+            compute_prices[uav_id] = p_compute_smooth
+            energy_prices[uav_id] = p_energy_smooth
+            channel_prices[uav_id] = p_channel_smooth
+
+        # 计算云端价格
+        cloud_price = PRICING.BASE_COMPUTE_PRICE * (1 + self.gamma_compute * (cloud_utilization - self.util_target))
+
+        # 健康状态和加载模型
+        if health_status is None:
+            health_status = {uid: 1.0 for uid in uav_states.keys()}
+        if loaded_models is None:
+            loaded_models = {uid: [] for uid in uav_states.keys()}
+
+        return ResourcePricesV2(
+            compute_prices=compute_prices,
+            cloud_price=cloud_price,
+            energy_prices=energy_prices,
+            channel_prices=channel_prices,
+            utilization=utilization_info,
+            health_status=health_status,
+            loaded_models=loaded_models,
+            timestamp=current_time
+        )
 
 
 # ============ 测试用例 ============

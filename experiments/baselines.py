@@ -194,11 +194,22 @@ class BaselineAlgorithm:
         
         return C_total * (split_layer / n_layers)
     
-    def _is_uav_covering_user(self, user_pos: Tuple[float, float], 
+    def _is_uav_covering_user(self, user_pos: Tuple[float, float],
                                uav_pos: Tuple[float, float]) -> bool:
-        """判断UAV是否覆盖用户"""
-        distance = np.sqrt((user_pos[0] - uav_pos[0])**2 + (user_pos[1] - uav_pos[1])**2)
-        return distance <= self.config.uav.R_cover
+        """
+        判断UAV是否覆盖用户（考虑3D距离，包含UAV高度）
+
+        只有在覆盖范围内的用户才能被服务
+        """
+        # UAV飞行高度
+        H = self.config.uav.H
+
+        # 计算3D距离（考虑UAV高度）
+        dx = user_pos[0] - uav_pos[0]
+        dy = user_pos[1] - uav_pos[1]
+        distance_3d = np.sqrt(dx**2 + dy**2 + H**2)
+
+        return distance_3d <= self.config.uav.R_cover
     
     def _reset_tracking(self, n_uavs: int = 5):
         """重置资源跟踪"""
@@ -246,66 +257,100 @@ class BaselineAlgorithm:
         """获取回程链路速率"""
         return self.config.channel.R_backhaul
     
-    def _compute_cloud_delay(self, C_cloud: float, n_concurrent: int = 1) -> float:
+    def _compute_cloud_delay(self, C_cloud: float, n_concurrent: int = 1,
+                              n_users: int = 1, cloud_resources: Dict = None) -> float:
         """
         计算云端计算时延（考虑资源竞争）
-        
-        云端资源竞争模型：
-        - 云端总算力 F_c 被所有并发任务共享
-        - 每个任务分配的算力 = F_c / n_concurrent
-        - 这反映了真实云端多租户场景
-        
+
+        云端资源竞争模型（两层限制）：
+        1. 总算力限制: F_c / n_concurrent
+        2. 单任务上限: F_per_task_max
+
+        这反映了真实云端多租户场景的资源竞争。
+
         Args:
             C_cloud: 云端计算量 (FLOPs)
             n_concurrent: 当前并发任务数
-            
+            n_users: 当前用户数量（保留参数兼容性，不再使用）
+            cloud_resources: 云端资源配置（如果提供，使用场景特定参数）
+
         Returns:
             float: 云端计算时延 (s)
         """
         if C_cloud <= 0:
             return 0.0
-        
-        F_c = self.config.cloud.F_c
-        F_per_task_max = self.config.cloud.F_per_task_max  # 单任务最大算力限制
-        max_concurrent = self.config.cloud.max_concurrent_tasks
-        
+
+        # 优先使用传入的云端资源配置
+        # 其次使用实例变量（由run方法设置）
+        # 最后回退到SystemConfig
+        if cloud_resources is not None:
+            F_c = cloud_resources.get('f_cloud', self.config.cloud.F_c)
+            F_per_task_max = cloud_resources.get('F_per_task_max', self.config.cloud.F_per_task_max)
+            max_concurrent = cloud_resources.get('max_concurrent_tasks', self.config.cloud.max_concurrent_tasks)
+        elif hasattr(self, '_current_cloud_resources') and self._current_cloud_resources is not None:
+            F_c = self._current_cloud_resources.get('f_cloud', self.config.cloud.F_c)
+            F_per_task_max = self._current_cloud_resources.get('F_per_task_max', self.config.cloud.F_per_task_max)
+            max_concurrent = self._current_cloud_resources.get('max_concurrent_tasks', self.config.cloud.max_concurrent_tasks)
+        else:
+            F_c = self.config.cloud.F_c
+            F_per_task_max = self.config.cloud.F_per_task_max
+            max_concurrent = self.config.cloud.max_concurrent_tasks
+
         # 有效并发数：至少1，最多max_concurrent
         effective_concurrent = max(1, min(n_concurrent, max_concurrent))
-        
-        # 每个任务分配的算力 = min(总算力/并发数, 单任务上限)
-        f_per_task = min(F_c / effective_concurrent, F_per_task_max)
-        
+
+        # 第一层：总算力限制
+        f_from_total = F_c / effective_concurrent
+
+        # 第二层：单任务上限
+        f_from_task = F_per_task_max
+
+        # 两层限制取最小值
+        f_per_task = min(f_from_total, f_from_task)
+
         # 云端计算时延
         T_cloud = C_cloud / f_per_task
-        
+
         return T_cloud
     
-    def _get_propagation_delay(self) -> float:
+    def _get_propagation_delay(self, cloud_resources: Dict = None) -> float:
         """
         获取UAV到云端的网络传播延迟
-        
+
         传播延迟包含：
         - 光纤传播延迟（~5ms/1000km）
         - 路由器处理延迟（~2ms/跳）
         - 边缘网关延迟（~5ms）
-        
+
+        Args:
+            cloud_resources: 云端资源配置（可选，如果提供，使用场景特定参数）
+
         Returns:
             float: 单向传播延迟 (s)
         """
+        # 优先使用传入的云端配置
+        if cloud_resources is not None:
+            return cloud_resources.get('T_propagation', self.config.cloud.T_propagation)
+        # 其次使用实例变量
+        if hasattr(self, '_current_cloud_resources') and self._current_cloud_resources is not None:
+            return self._current_cloud_resources.get('T_propagation', self.config.cloud.T_propagation)
         return self.config.cloud.T_propagation
     
-    def _compute_cloud_path_delay(self, data_size: float, C_cloud: float, 
-                                   n_concurrent: int = 1) -> Tuple[float, float, float]:
+    def _compute_cloud_path_delay(self, data_size: float, C_cloud: float,
+                                   n_concurrent: int = 1, n_users: int = 1,
+                                   cloud_resources: Dict = None) -> Tuple[float, float, float]:
         """
         计算完整的云端路径时延
-        
+
         云端路径 = UAV→云端传输 + 传播延迟 + 云端计算 + 传播延迟 + 返回传输
-        
+
         Args:
             data_size: 传输数据量 (bits)
             C_cloud: 云端计算量 (FLOPs)
             n_concurrent: 当前并发任务数
-            
+            n_users: 当前用户数量（用于用户配额限制）
+            cloud_resources: 云端资源配置（可选，支持场景特定参数）
+
         Returns:
             Tuple[T_trans, T_propagation_total, T_cloud]:
                 - T_trans: 传输时延（上传+下载）
@@ -313,24 +358,24 @@ class BaselineAlgorithm:
                 - T_cloud: 云端计算时延
         """
         R_backhaul = self._compute_backhaul_rate()
-        T_propagation = self._get_propagation_delay()
-        
+        T_propagation = self._get_propagation_delay(cloud_resources)
+
         # UAV到云端传输
         T_trans_up = data_size / R_backhaul
-        
+
         # 结果返回传输（假设结果数据量为原始的1%）
         result_size = data_size * 0.01
         T_trans_down = result_size / R_backhaul
-        
+
         # 总传输时延
         T_trans = T_trans_up + T_trans_down
-        
+
         # 往返传播延迟（去程+回程）
         T_propagation_total = 2 * T_propagation
-        
-        # 云端计算时延（考虑资源竞争）
-        T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent)
-        
+
+        # 云端计算时延（考虑资源竞争和用户配额）
+        T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
+
         return T_trans, T_propagation_total, T_cloud
     
     def run(self, tasks: List[Dict], 
@@ -665,12 +710,15 @@ class CloudOnlyBaseline(BaselineAlgorithm):
         
         import time
         start_time = time.time()
-        
+
         results = []
         n_uavs = len(uav_resources)
         n_tasks = len(tasks)
         self._reset_tracking(n_uavs)
-        
+
+        # Store cloud_resources for use in helper methods
+        self._current_cloud_resources = cloud_resources
+
         # 获取UAV位置
         uav_positions = []
         for i, uav in enumerate(uav_resources):
@@ -678,31 +726,35 @@ class CloudOnlyBaseline(BaselineAlgorithm):
                 uav_positions.append(uav['position'])
             else:
                 uav_positions.append((400 + i * 300, 1000))
-        
+
         R_backhaul = self._compute_backhaul_rate()
-        T_propagation = self._get_propagation_delay()
-        
+        T_propagation = self._get_propagation_delay(cloud_resources)
+
         # 云端资源竞争：估算并发任务数
         # 全云端基线假设所有任务同时到达，争抢云端资源
         n_concurrent = min(n_tasks, self.config.cloud.max_concurrent_tasks)
-        
+
+        # 计算用户数量（用于用户配额限制）
+        user_ids = set(task.get('user_id', i) for i, task in enumerate(tasks))
+        n_users = max(1, len(user_ids))
+
         for i, task in enumerate(tasks):
             uav_id = i % n_uavs
             uav_pos = uav_positions[uav_id]
-            
+
             C_total = task.get('compute_size', 10e9)
             data_size = task.get('data_size', 1e6)
             deadline = task.get('deadline', 5.0)
             user_pos = task.get('user_pos', (1000, 1000))
             priority = task.get('priority', 0.5)
-            
+
             # 用户到UAV上传
             upload_rate = self._compute_upload_rate(user_pos, uav_pos)
             T_upload = data_size / upload_rate
-            
-            # 云端路径时延（包含资源竞争和传播延迟）
+
+            # 云端路径时延（包含资源竞争、传播延迟和用户配额限制）
             T_trans, T_propagation_total, T_cloud = self._compute_cloud_path_delay(
-                data_size, C_total, n_concurrent
+                data_size, C_total, n_concurrent, n_users
             )
             
             # 总时延 = 上传 + 云端路径
@@ -882,35 +934,39 @@ class FixedSplitBaseline(BaselineAlgorithm):
         
         # 云端资源竞争：估算并发任务数（部分任务使用云端）
         n_concurrent = min(n_tasks, self.config.cloud.max_concurrent_tasks)
-        
+
+        # 计算用户数量（用于用户配额限制）
+        user_ids = set(task.get('user_id', i) for i, task in enumerate(tasks))
+        n_users = max(1, len(user_ids))
+
         for i, task in enumerate(tasks):
             uav_id = i % n_uavs
             f_edge = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
             uav_pos = uav_positions[uav_id]
-            
+
             C_total = task.get('compute_size', 10e9)
             data_size = task.get('data_size', 1e6)
             deadline = task.get('deadline', 5.0)
             user_pos = task.get('user_pos', (1000, 1000))
             priority = task.get('priority', 0.5)
-            
+
             # 固定切分
             C_edge = C_total * self.split_ratio
             C_cloud = C_total * (1 - self.split_ratio)
-            
+
             # 用户上传
             upload_rate = self._compute_upload_rate(user_pos, uav_pos)
             T_upload = data_size / upload_rate
-            
+
             # 边缘计算
             T_edge = C_edge / f_edge
-            
+
             # 中间特征传输 (假设特征大小与切分比例相关)
             feature_size = data_size * self.split_ratio * 0.5
             T_trans = feature_size / R_backhaul
-            
-            # 云端计算（考虑资源竞争）
-            T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent)
+
+            # 云端计算（考虑资源竞争和用户配额）
+            T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
             
             # 传播延迟（往返）
             T_propagation_total = 2 * T_propagation
@@ -988,31 +1044,35 @@ class RandomAuctionBaseline(BaselineAlgorithm):
         
         # 云端资源竞争
         n_concurrent = min(n_tasks, self.config.cloud.max_concurrent_tasks)
-        
+
+        # 计算用户数量（用于用户配额限制）
+        user_ids = set(task.get('user_id', i) for i, task in enumerate(tasks))
+        n_users = max(1, len(user_ids))
+
         # 随机分配
         for i, task in enumerate(tasks):
             uav_id = self.rng.integers(0, n_uavs)
             split_ratio = self.rng.uniform(0.2, 0.8)
-            
+
             f_edge = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
             uav_pos = uav_positions[uav_id]
-            
+
             C_total = task.get('compute_size', 10e9)
             data_size = task.get('data_size', 1e6)
             deadline = task.get('deadline', 5.0)
             user_pos = task.get('user_pos', (1000, 1000))
             priority = task.get('priority', 0.5)
-            
+
             C_edge = C_total * split_ratio
             C_cloud = C_total * (1 - split_ratio)
-            
+
             # 用户上传
             upload_rate = self._compute_upload_rate(user_pos, uav_pos)
             T_upload = data_size / upload_rate
-            
+
             T_edge = C_edge / f_edge
             T_trans = data_size * split_ratio * 0.5 / R_backhaul
-            T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent)
+            T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
             T_propagation_total = 2 * T_propagation
             T_return = data_size * 0.01 / R_backhaul
             
@@ -1086,50 +1146,54 @@ class NoActiveInferenceBaseline(BaselineAlgorithm):
         
         # 云端资源竞争
         n_concurrent = min(n_tasks, self.config.cloud.max_concurrent_tasks)
-        
+
+        # 计算用户数量（用于用户配额限制）
+        user_ids = set(task.get('user_id', i) for i, task in enumerate(tasks))
+        n_users = max(1, len(user_ids))
+
         for i, task in enumerate(tasks):
             uav_id = i % n_uavs
             f_edge = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
             uav_pos = uav_positions[uav_id]
-            
+
             C_total = task.get('compute_size', 10e9)
             data_size = task.get('data_size', 1e6)
             deadline = task.get('deadline', 5.0)
             user_pos = task.get('user_pos', (1000, 1000))
             priority = task.get('priority', 0.5)
-            
+
             # 计算上传速率
             upload_rate = self._compute_upload_rate(user_pos, uav_pos)
-            
+
             # 简单效用计算（无自由能修正）
             # 基于DNN整数层选择切分点
             model_spec = task.get('model_spec')
             n_layers = model_spec.layers if model_spec and hasattr(model_spec, 'layers') else 10
-            
+
             best_split = 0.5
             best_delay = float('inf')
             best_split_layer = n_layers // 2
-            
+
             # 尝试几个典型的层切分点（约30%, 50%, 70%层）
             layer_ratios = [0.3, 0.5, 0.7]
             for ratio in layer_ratios:
                 split_layer = int(n_layers * ratio)
                 split = split_layer / n_layers
-                
+
                 # 使用精确的计算量分配
                 C_edge = self._get_cumulative_flops_at_layer(split_layer, model_spec, n_layers, C_total)
                 C_cloud = C_total - C_edge
-                
+
                 T_upload = data_size / upload_rate
                 T_edge = C_edge / f_edge if C_edge > 0 else 0
                 # 使用精确的中间特征大小
                 feature_size = self._get_feature_size_at_layer(split_layer, model_spec, n_layers)
                 T_trans = feature_size / R_backhaul if split_layer < n_layers else 0
-                T_cloud_delay = self._compute_cloud_delay(C_cloud, n_concurrent) if split_layer < n_layers else 0
+                T_cloud_delay = self._compute_cloud_delay(C_cloud, n_concurrent, n_users) if split_layer < n_layers else 0
                 T_propagation_total = 2 * T_propagation if split_layer < n_layers else 0
-                
+
                 T_total = T_upload + T_edge + T_trans + T_propagation_total + T_cloud_delay
-                
+
                 if T_total < best_delay:
                     best_delay = T_total
                     best_split = split
@@ -1224,39 +1288,43 @@ class HeuristicAllocationBaseline(BaselineAlgorithm):
         
         # 启发式：平均分配算力
         tasks_per_uav = max(1, n_tasks // n_uavs)
-        
+
         # 云端资源竞争
         n_concurrent = min(n_tasks, self.config.cloud.max_concurrent_tasks)
-        
+
+        # 计算用户数量（用于用户配额限制）
+        user_ids = set(task.get('user_id', i) for i, task in enumerate(tasks))
+        n_users = max(1, len(user_ids))
+
         for i, task in enumerate(tasks):
             uav_id = i % n_uavs
             f_max = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
             uav_pos = uav_positions[uav_id]
-            
+
             # 启发式算力分配：简单按任务数平分
             f_allocated = f_max / tasks_per_uav
             f_allocated = min(f_allocated, f_max)
             f_allocated = max(f_allocated, 1e9)  # 最小1GFLOPS
-            
+
             C_total = task.get('compute_size', 10e9)
             data_size = task.get('data_size', 1e6)
             deadline = task.get('deadline', 5.0)
             user_pos = task.get('user_pos', (1000, 1000))
             priority = task.get('priority', 0.5)
-            
+
             # 计算上传速率
             upload_rate = self._compute_upload_rate(user_pos, uav_pos)
-            
+
             # 启发式切分：固定30%边缘，70%云端
             split_ratio = 0.3
             C_edge = C_total * split_ratio
             C_cloud = C_total * (1 - split_ratio)
-            
+
             # 时延计算
             T_upload = data_size / upload_rate
             T_edge = C_edge / f_allocated
             T_trans = data_size * 0.3 * 0.5 / R_backhaul
-            T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent)
+            T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
             T_propagation_total = 2 * T_propagation
             T_return = data_size * 0.01 / R_backhaul
             
@@ -1330,38 +1398,42 @@ class NoDynamicPricingBaseline(BaselineAlgorithm):
         
         # 固定价格导致资源分配不均
         uav_load_counts = [0] * n_uavs
-        
+
         # 云端资源竞争
         n_concurrent = min(n_tasks, self.config.cloud.max_concurrent_tasks)
-        
+
+        # 计算用户数量（用于用户配额限制）
+        user_ids = set(task.get('user_id', i) for i, task in enumerate(tasks))
+        n_users = max(1, len(user_ids))
+
         for i, task in enumerate(tasks):
             # 固定价格下选择第一个可用UAV（不考虑负载）
             uav_id = i % n_uavs
             uav_load_counts[uav_id] += 1
             uav_pos = uav_positions[uav_id]
-            
+
             f_max = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
             # 负载增加导致分配算力减少
             f_allocated = f_max / max(1, uav_load_counts[uav_id])
-            
+
             C_total = task.get('compute_size', 10e9)
             data_size = task.get('data_size', 1e6)
             deadline = task.get('deadline', 5.0)
             user_pos = task.get('user_pos', (1000, 1000))
             priority = task.get('priority', 0.5)
-            
+
             # 计算上传速率
             upload_rate = self._compute_upload_rate(user_pos, uav_pos)
-            
+
             # 50%切分
             split_ratio = 0.5
             C_edge = C_total * split_ratio
             C_cloud = C_total * (1 - split_ratio)
-            
+
             T_upload = data_size / upload_rate
             T_edge = C_edge / f_allocated
             T_trans = data_size * 0.5 * 0.5 / R_backhaul
-            T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent)
+            T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
             T_propagation_total = 2 * T_propagation
             
             T_total = T_upload + T_edge + T_trans + T_propagation_total + T_cloud
@@ -1458,7 +1530,11 @@ class FixedPricingBaseline(BaselineAlgorithm):
         
         # 云端资源竞争
         n_concurrent = min(n_tasks, self.config.cloud.max_concurrent_tasks)
-        
+
+        # 计算用户数量（用于用户配额限制）
+        user_ids = set(task.get('user_id', i) for i, task in enumerate(tasks))
+        n_users = max(1, len(user_ids))
+
         for idx in sorted_indices:
             task = tasks[idx]
             C_total = task.get('compute_size', 10e9)
@@ -1466,61 +1542,61 @@ class FixedPricingBaseline(BaselineAlgorithm):
             deadline = task.get('deadline', 5.0)
             user_pos = task.get('user_pos', (1000, 1000))
             priority = task.get('priority', 0.5)
-            
+
             # 选择价格最低且有资源的UAV
             best_uav = -1
             best_delay = float('inf')
-            
+
             for uav_id in range(n_uavs):
                 if uav_compute_avail[uav_id] < C_total * 0.3:
                     continue
-                
+
                 uav_pos = uav_positions[uav_id]
                 upload_rate = self._compute_upload_rate(user_pos, uav_pos)
-                
+
                 T_upload = data_size / upload_rate
-                
+
                 # 切分决策 (受价格影响)
                 # 高价格导致更多任务被推到云端
                 split_ratio = 0.5 - (self.price_multiplier - 1.0) * 0.2  # 价格高时减少边缘比例
                 split_ratio = max(0.1, min(0.9, split_ratio))
-                
+
                 C_edge = C_total * split_ratio
                 C_cloud = C_total * (1 - split_ratio)
-                
+
                 f_edge = min(uav_compute_avail[uav_id], uav_resources[uav_id].get('f_max', self.config.uav.f_max))
-                
+
                 T_edge = C_edge / f_edge if f_edge > 0 else float('inf')
                 T_trans = data_size * split_ratio / R_backhaul
-                T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent)
+                T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
                 T_propagation_total = 2 * T_propagation
-                
+
                 T_total = T_upload + T_edge + T_trans + T_propagation_total + T_cloud
-                
+
                 if T_total < best_delay:
                     best_delay = T_total
                     best_uav = uav_id
-            
+
             if best_uav >= 0:
                 uav_id = best_uav
                 uav_pos = uav_positions[uav_id]
-                
+
                 upload_rate = self._compute_upload_rate(user_pos, uav_pos)
                 T_upload = data_size / upload_rate
-                
+
                 split_ratio = 0.5 - (self.price_multiplier - 1.0) * 0.2
                 split_ratio = max(0.1, min(0.9, split_ratio))
-                
+
                 C_edge = C_total * split_ratio
                 C_cloud = C_total * (1 - split_ratio)
-                
+
                 # 分配足够的算力来完成边缘计算部分
-                f_allocated = min(uav_compute_avail[uav_id], 
+                f_allocated = min(uav_compute_avail[uav_id],
                                  uav_resources[uav_id].get('f_max', self.config.uav.f_max))
-                
+
                 T_edge = C_edge / f_allocated if f_allocated > 0 else 0
                 T_trans = data_size * split_ratio / R_backhaul
-                T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent)
+                T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
                 T_propagation_total = 2 * T_propagation
                 
                 T_total = T_upload + T_edge + T_trans + T_propagation_total + T_cloud
@@ -1647,6 +1723,10 @@ class DelayOptimalBaseline(BaselineAlgorithm):
         
         # 云端资源竞争：估算并发任务数
         n_concurrent = min(n_tasks, self.config.cloud.max_concurrent_tasks)
+
+        # 计算用户数量（用于用户配额限制）
+        user_ids = set(task.get('user_id', i) for i, task in enumerate(tasks))
+        n_users = max(1, len(user_ids))
         
         # 使用KMeans优化部署UAV位置（与Proposed公平对比）
         uav_positions = self._deploy_uavs_kmeans(tasks, n_uavs)
@@ -1737,7 +1817,7 @@ class DelayOptimalBaseline(BaselineAlgorithm):
                         # 使用精确的特征大小
                         feature_size = self._get_feature_size_at_layer(split_layer, model_spec, n_layers)
                         T_trans = feature_size / R_backhaul
-                        T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent)
+                        T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
                         T_propagation_total = 2 * T_propagation
                     else:
                         T_trans = 0

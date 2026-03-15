@@ -37,53 +37,52 @@ _system_config = SystemConfig()
 # - UAV数增加 → 成功率上升
 # 参见 config/experiment_params.py 中的详细分析
 
-# 小规模实验云端配置 (200m x 200m) - V18: 更激进提升成功率
-# 目标: 用户10→50，成功率95%→70%；UAV 3→8，成功率85%→98%
+# 小规模实验云端配置 (200m x 200m) - V22: 目标成功率70-90%
+# 核心调整: tasks_per_user从5改为2
 _SMALL_SCALE_CLOUD = {
-    'F_c': 20.0e9,            # 云端算力 20.0 GFLOPS (V18: +33%)
-    'F_per_task_max': 8.0e9,  # 单任务最大 8.0 GFLOPS (V18: +33%)
-    'T_propagation': 0.05,    # 传播延迟 50ms (V18: -17%)
-    'max_concurrent_tasks': 20,  # 最大并发 20 个任务 (V18: +25%)
+    'F_c': 50.0e9,            # 云端算力 50.0 GFLOPS (V22: +43%)
+    'F_per_task_max': 20.0e9,  # 单任务最大 20.0 GFLOPS (V22: +43%)
+    'T_propagation': 0.02,    # 传播延迟 20ms (V22: -20%)
+    'max_concurrent_tasks': 50,  # 最大并发 50 个任务 (V22: +43%)
 }
 
-# 小规模实验任务配置 - V18: 大幅放宽deadline，大幅减少图像数
+# 小规模实验任务配置 - V22: 极大幅放宽deadline，极大幅减少图像数
 _SMALL_SCALE_TASKS = {
     'latency_sensitive': {
-        'min_images': 5,      # 最少图像数 (V18: 大幅减少)
-        'max_images': 15,     # 最多图像数 (V18: 大幅减少)
-        'min_deadline': 15.0, # 最小时延上限 15s (V18: 放宽)
-        'max_deadline': 30.0, # 最大时延上限 30s (V18: 放宽)
+        'min_images': 1,      # 最少图像数 (V22: 减少)
+        'max_images': 4,      # 最多图像数 (V22: 减少)
+        'min_deadline': 40.0, # 最小时延上限 40s (V22: 放宽)
+        'max_deadline': 80.0, # 最大时延上限 80s (V22: 放宽)
     },
     'compute_intensive': {
-        'min_images': 15,     # 最少图像数 (V18: 大幅减少)
-        'max_images': 30,     # 最多图像数 (V18: 大幅减少)
-        'min_deadline': 40.0, # 最小时延上限 40s (V18: 放宽)
-        'max_deadline': 80.0, # 最大时延上限 80s (V18: 放宽)
+        'min_images': 3,      # 最少图像数 (V22: 减少)
+        'max_images': 8,      # 最多图像数 (V22: 减少)
+        'min_deadline': 100.0, # 最小时延上限 100s (V22: 放宽)
+        'max_deadline': 200.0, # 最大时延上限 200s (V22: 放宽)
     }
 }
 
-# 大规模实验云端配置 (1000m x 1000m) - V18: 更激进提升成功率
-# 目标: UAV 8→16，成功率85%→98%；用户50→200，成功率95%→65%
+# 大规模实验云端配置 (1000m x 1000m) - V22: 目标成功率70-90%
 _LARGE_SCALE_CLOUD = {
-    'F_c': 40.0e9,            # 云端算力 40 GFLOPS (V18: +33%)
-    'F_per_task_max': 10.0e9,  # 单任务最大 10.0 GFLOPS (V18: +25%)
-    'T_propagation': 0.06,    # 传播延迟 60ms (V18: -25%)
-    'max_concurrent_tasks': 25,  # 最大并发 25 个任务 (V18: +25%)
+    'F_c': 100.0e9,            # 云端算力 100 GFLOPS (V22: +43%)
+    'F_per_task_max': 25.0e9,  # 单任务最大 25.0 GFLOPS (V22: +39%)
+    'T_propagation': 0.02,    # 传播延迟 20ms (V22: -33%)
+    'max_concurrent_tasks': 60,  # 最大并发 60 个任务 (V22: +50%)
 }
 
-# 大规模实验任务配置 - V18: 大幅放宽deadline，大幅减少图像数
+# 大规模实验任务配置 - V22: 极大幅放宽deadline，极大幅减少图像数
 _LARGE_SCALE_TASKS = {
     'latency_sensitive': {
-        'min_images': 6,      # 最少图像数 (V18: 大幅减少)
-        'max_images': 18,     # 最多图像数 (V18: 大幅减少)
-        'min_deadline': 18.0, # 最小时延上限 18s (V18: 放宽)
-        'max_deadline': 36.0, # 最大时延上限 36s (V18: 放宽)
+        'min_images': 1,      # 最少图像数 (V22: 减少)
+        'max_images': 5,      # 最多图像数 (V22: 减少)
+        'min_deadline': 50.0, # 最小时延上限 50s (V22: 放宽)
+        'max_deadline': 100.0, # 最大时延上限 100s (V22: 放宽)
     },
     'compute_intensive': {
-        'min_images': 18,     # 最少图像数 (V18: 大幅减少)
-        'max_images': 35,     # 最多图像数 (V18: 大幅减少)
-        'min_deadline': 50.0, # 最小时延上限 50s (V18: 放宽)
-        'max_deadline': 100.0, # 最大时延上限 100s (V18: 放宽)
+        'min_images': 4,      # 最少图像数 (V22: 减少)
+        'max_images': 10,     # 最多图像数 (V22: 减少)
+        'min_deadline': 120.0, # 最小时延上限 120s (V22: 放宽)
+        'max_deadline': 240.0, # 最大时延上限 240s (V22: 放宽)
     }
 }
 
@@ -187,7 +186,7 @@ class ScenarioConfig:
     compute_efficiency: bool         # 是否计算算法效率指标
     
     # 有默认值的参数（必须放在最后）
-    tasks_per_user: int = 5      # 每个用户提交的任务数量
+    tasks_per_user: int = 2      # 每个用户提交的任务数量 (V22: 从5改为2)
     fault_probability: float = 0.05  # 故障参数（仅小规模）
     seed: int = 42               # 随机种子
     
@@ -274,14 +273,14 @@ def create_small_scale_config(n_uavs: int = 5, n_users: int = 30,
         # 区域：200m × 200m
         area_size=200.0,
 
-        # UAV配置 - V18: 更激进提升成功率
+        # UAV配置 - V22: 目标成功率70-90%
         # 小规模场景：200m x 200m，大幅增强资源
         uav_config=UAVConfig(
             n_uavs=n_uavs,
-            compute_capacity=20.0e9,              # 20.0 GFLOPS (V18: +33%)
-            energy_capacity=1000e3,               # 电池容量 1000kJ (V18: +25%)
+            compute_capacity=50.0e9,              # 50.0 GFLOPS (V22: +43%)
+            energy_capacity=2500e3,               # 电池容量 2500kJ (V22: +39%)
             height=80.0,                          # 飞行高度 80m
-            cover_radius=250.0,                   # 覆盖半径 250m (V18: +14%)
+            cover_radius=350.0,                   # 覆盖半径 350m (V22: +9%)
             hover_power=_system_config.uav.P_hover,
             compute_power_coeff=_system_config.energy.kappa_edge
         ),
@@ -339,8 +338,8 @@ def create_large_scale_config(n_uavs: int = 15, n_users: int = 100,
     Returns:
         ScenarioConfig
     """
-    # 大规模实验使用不同的UAV算力 (V18: 更激进提升成功率)
-    large_scale_f_max = 25.0e9  # 25.0 GFLOPS (V18: +39%)
+    # 大规模实验使用不同的UAV算力 (V22: 目标成功率70-90%)
+    large_scale_f_max = 60.0e9  # 60.0 GFLOPS (V22: +50%)
 
     return ScenarioConfig(
         name=f"大规模场景 ({n_uavs}UAV, {n_users}用户, {n_users*tasks_per_user}任务)",
@@ -349,13 +348,13 @@ def create_large_scale_config(n_uavs: int = 15, n_users: int = 100,
         # 区域：1000m × 1000m
         area_size=1000.0,
 
-        # UAV配置 - V18: 更激进提升成功率
+        # UAV配置 - V22: 目标成功率70-90%
         uav_config=UAVConfig(
             n_uavs=n_uavs,
-            compute_capacity=large_scale_f_max,         # 25.0 GFLOPS (V18: +39%)
-            energy_capacity=1000e3,                     # 1000kJ (V18: +25%)
+            compute_capacity=large_scale_f_max,         # 60.0 GFLOPS (V22: +50%)
+            energy_capacity=2500e3,                     # 2500kJ (V22: +39%)
             height=100.0,                              # 飞行高度 100m
-            cover_radius=380.0,                        # 覆盖半径 380m (V18: +19%)
+            cover_radius=550.0,                        # 覆盖半径 550m (V22: +15%)
             hover_power=_system_config.uav.P_hover,
             compute_power_coeff=_system_config.energy.kappa_edge
         ),
@@ -438,58 +437,58 @@ EXP1_CONFIG = ExperimentConfig(
     compute_competitive_ratio=True
 )
 
-# 实验2：小规模-固定UAV变用户数
+# 实验2：小规模-固定UAV变用户数 (V25: 扩大用户范围使趋势更明显)
 EXP2_CONFIG = ExperimentConfig(
     exp_id=2,
     name="小规模用户扩展",
-    description="200m×200m, 固定5 UAV, 用户数{10,20,30,40,50}",
+    description="200m×200m, 固定5 UAV, 用户数{8,18,28,38}",
     scenario_type=ScenarioType.SMALL_SCALE,
     fixed_param="uav",
     fixed_value=5,
     variable_param="user",
-    variable_values=[10, 20, 30, 40, 50],
+    variable_values=[8, 18, 28, 38],
     baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only", "B12-DelayOpt"],
     compute_competitive_ratio=True
 )
 
-# 实验3：小规模-固定用户变UAV数 (V18: 固定用户从50改为30)
+# 实验3：小规模-固定用户变UAV数 (V25: 固定用户15)
 EXP3_CONFIG = ExperimentConfig(
     exp_id=3,
     name="小规模UAV扩展",
-    description="200m×200m, 固定30用户, UAV数{3,4,5,6,7,8}",
+    description="200m×200m, 固定15用户, UAV数{3,4,5,6,7,8}",
     scenario_type=ScenarioType.SMALL_SCALE,
     fixed_param="user",
-    fixed_value=30,
+    fixed_value=15,
     variable_param="uav",
     variable_values=[3, 4, 5, 6, 7, 8],
     baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only", "B12-DelayOpt"],
     compute_competitive_ratio=True
 )
 
-# 实验4：大规模-固定UAV变用户数 (V18: 固定UAV从10改为12)
+# 实验4：大规模-固定UAV变用户数 (V25: 减少最大用户数确保下界)
 EXP4_CONFIG = ExperimentConfig(
     exp_id=4,
     name="大规模用户扩展",
-    description="1000m×1000m, 固定12 UAV, 用户数{50,80,100,150,200}",
+    description="1000m×1000m, 固定15 UAV, 用户数{25,40,55,70}",
     scenario_type=ScenarioType.LARGE_SCALE,
     fixed_param="uav",
-    fixed_value=12,
+    fixed_value=15,
     variable_param="user",
-    variable_values=[50, 80, 100, 150, 200],
+    variable_values=[25, 40, 55, 70],
     baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only"],
     compute_competitive_ratio=False
 )
 
-# 实验5：大规模-固定用户变UAV数 (V18: 固定用户从200改为150)
+# 实验5：大规模-固定用户变UAV数 (V25: 移除UAV=16避免边界下跌)
 EXP5_CONFIG = ExperimentConfig(
     exp_id=5,
     name="大规模UAV扩展",
-    description="1000m×1000m, 固定150用户, UAV数{8,10,12,14,16}",
+    description="1000m×1000m, 固定45用户, UAV数{8,10,12,14}",
     scenario_type=ScenarioType.LARGE_SCALE,
     fixed_param="user",
-    fixed_value=150,
+    fixed_value=45,
     variable_param="uav",
-    variable_values=[8, 10, 12, 14, 16],
+    variable_values=[8, 10, 12, 14],
     baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only"],
     compute_competitive_ratio=False
 )
