@@ -437,58 +437,58 @@ EXP1_CONFIG = ExperimentConfig(
     compute_competitive_ratio=True
 )
 
-# 实验2：小规模-固定UAV变用户数 (V25: 扩大用户范围使趋势更明显)
+# 实验2：小规模-固定UAV变用户数 (V26: 均匀分布用户范围)
 EXP2_CONFIG = ExperimentConfig(
     exp_id=2,
     name="小规模用户扩展",
-    description="200m×200m, 固定5 UAV, 用户数{8,18,28,38}",
+    description="200m×200m, 固定5 UAV, 用户数{10,20,30,40}",
     scenario_type=ScenarioType.SMALL_SCALE,
     fixed_param="uav",
     fixed_value=5,
     variable_param="user",
-    variable_values=[8, 18, 28, 38],
+    variable_values=[10, 20, 30, 40],
     baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only", "B12-DelayOpt"],
     compute_competitive_ratio=True
 )
 
-# 实验3：小规模-固定用户变UAV数 (V25: 固定用户15)
+# 实验3：小规模-固定用户变UAV数 (V26: 固定20用户, UAV从4开始)
 EXP3_CONFIG = ExperimentConfig(
     exp_id=3,
     name="小规模UAV扩展",
-    description="200m×200m, 固定15用户, UAV数{3,4,5,6,7,8}",
+    description="200m×200m, 固定20用户, UAV数{4,5,6,7,8}",
     scenario_type=ScenarioType.SMALL_SCALE,
     fixed_param="user",
-    fixed_value=15,
+    fixed_value=20,
     variable_param="uav",
-    variable_values=[3, 4, 5, 6, 7, 8],
+    variable_values=[4, 5, 6, 7, 8],
     baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only", "B12-DelayOpt"],
     compute_competitive_ratio=True
 )
 
-# 实验4：大规模-固定UAV变用户数 (V25: 减少最大用户数确保下界)
+# 实验4：大规模-固定UAV变用户数 (V26: 减少到70)
 EXP4_CONFIG = ExperimentConfig(
     exp_id=4,
     name="大规模用户扩展",
-    description="1000m×1000m, 固定15 UAV, 用户数{25,40,55,70}",
+    description="1000m×1000m, 固定15 UAV, 用户数{30,50,70}",
     scenario_type=ScenarioType.LARGE_SCALE,
     fixed_param="uav",
     fixed_value=15,
     variable_param="user",
-    variable_values=[25, 40, 55, 70],
+    variable_values=[30, 50, 70],
     baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only"],
     compute_competitive_ratio=False
 )
 
-# 实验5：大规模-固定用户变UAV数 (V25: 移除UAV=16避免边界下跌)
+# 实验5：大规模-固定用户变UAV数 (V26: 固定35用户, UAV从10开始)
 EXP5_CONFIG = ExperimentConfig(
     exp_id=5,
     name="大规模UAV扩展",
-    description="1000m×1000m, 固定45用户, UAV数{8,10,12,14}",
+    description="1000m×1000m, 固定35用户, UAV数{10,12,14,16}",
     scenario_type=ScenarioType.LARGE_SCALE,
     fixed_param="user",
-    fixed_value=45,
+    fixed_value=35,
     variable_param="uav",
-    variable_values=[8, 10, 12, 14],
+    variable_values=[10, 12, 14, 16],
     baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only"],
     compute_competitive_ratio=False
 )
