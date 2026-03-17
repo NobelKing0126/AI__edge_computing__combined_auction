@@ -108,6 +108,10 @@ DEFAULT_SIMULATION_TIME = 200.0  # 秒
 SMALL_SCALE_PER_USER_RATE = 0.10  # 小规模：每用户每10秒一个任务 (平衡版V4)
 LARGE_SCALE_PER_USER_RATE = 0.06  # 大规模：每用户每16.7秒一个任务 (平衡版V4)
 
+# 实验2/3使用的每用户到达率列表（用于多速率遍历）
+# 与报告生成中的多速率支持保持一致
+PER_USER_ARRIVAL_RATES = [0.08, 0.10, 0.12, 0.15, 0.20]  # 每用户到达率 (任务/秒)
+
 def calculate_simulation_time(n_users: int, tasks_per_user: int = 5,
                               arrival_rate: float = 1.0) -> float:
     """
@@ -262,23 +266,36 @@ class SPController:
         C_edge = total_flops * split_ratio
         C_cloud = total_flops * (1 - split_ratio)
 
-        # 使用凸优化求解最优资源分配
+        # 使用新的解析解计算最优资源分配
         if NEW_MODULES_AVAILABLE and self.convex_solver is not None:
-            E_budget = min(
-                uav_state.E_remain / 5,
-                0.3 * self.system_config.uav.E_max
+            # 边缘能量预算: E_e,j^budget = min(E_j^ava, (P_j^max - P_j^hover) * T_window)
+            E_edge_budget = min(
+                uav_state.E_remain,
+                (self.system_config.uav.P_max - self.system_config.uav.P_hover) * 100.0  # T_window=100s
             )
 
-            result = self.convex_solver.solve(
-                C_edge=C_edge,
-                C_cloud=C_cloud,
-                f_avail=uav_state.f_avail,
-                f_cloud_max=self.system_config.cloud.F_per_task_max,
-                E_budget=E_budget
-            )
+            # 云端能量预算: E_c,i^budget = theta_i^c * P_c^max * T_window
+            # 简化: theta_i^c = 1.0 (单一云服务器)
+            E_cloud_budget = 1.0 * self.system_config.cloud.P_max * 100.0  # T_window=100s
 
-            f_edge = result.f_edge_star
-            f_cloud = result.f_cloud_star
+            # 获取能耗系数
+            kappa_edge = self.convex_solver.config.kappa_edge
+            kappa_cloud = self.convex_solver.config.kappa_cloud
+
+            # 边缘设备最优频率: f_e* = min(f_j^ava, sqrt(E_e,j^budget / (kappa_edge * C_e))), if C_e > 0
+            if C_edge > 0 and kappa_edge > 0:
+                f_edge_unconstrained = np.sqrt(E_edge_budget / (kappa_edge * C_edge))
+                f_edge = min(f_edge_unconstrained, uav_state.f_avail)
+            else:
+                f_edge = 0.0
+
+            # 云服务器最优频率: f_c* = min(F_c^ava, sqrt(E_c,i^budget / (kappa_cloud * C_c))), if C_c > 0
+            f_cloud_max = self.system_config.cloud.F_per_task_max
+            if C_cloud > 0 and kappa_cloud > 0:
+                f_cloud_unconstrained = np.sqrt(E_cloud_budget / (kappa_cloud * C_cloud))
+                f_cloud = min(f_cloud_unconstrained, f_cloud_max)
+            else:
+                f_cloud = 0.0
         else:
             # 简单启发式
             f_edge = min(uav_state.f_avail * 0.5, self.system_config.uav.f_max * 0.5)
@@ -1381,16 +1398,16 @@ class RealExperimentRunnerV9:
     # ============ 实验2: 小规模用户扩展 ============
 
     def run_exp2(self) -> Dict:
-        """实验2: 小规模用户扩展
+        """实验2: 小规模用户扩展 - 支持多速率遍历
 
         根据experiment_params.py设计：
-        - 使用每用户到达率：0.15/s (每6.7秒一个任务)
+        - 使用每用户到达率列表：PER_USER_ARRIVAL_RATES
         - 总到达率 = n_users * per_user_rate
         - 预期成功率趋势：用户10→50，成功率95%→44%
         """
         print("\n" + "=" * 70)
         print("实验2: 小规模用户扩展")
-        print(f"每用户到达率: {SMALL_SCALE_PER_USER_RATE}/s")
+        print(f"每用户到达率列表: {PER_USER_ARRIVAL_RATES}/s")
         print(f"固定UAV数: 5")
         print("=" * 70)
 
@@ -1399,109 +1416,125 @@ class RealExperimentRunnerV9:
         algorithms = ["Proposed", "Greedy", "Edge-Only", "Cloud-Only", "B12-DelayOpt",
                       "MAPPO-Attention"]
 
-        results = {algo: [] for algo in algorithms}
-        price_histories = {}
+        # 结果按每用户到达率分组
+        results_by_rate = {}
+        price_histories_by_rate = {}
 
-        for n_users in user_counts:
-            # 计算总到达率 = 用户数 × 每用户到达率
-            total_arrival_rate = n_users * SMALL_SCALE_PER_USER_RATE
-            print(f"\n--- 用户数: {n_users} (总到达率: {total_arrival_rate:.1f}/s) ---")
+        # 遍历每用户到达率列表
+        for rate_idx, per_user_rate in enumerate(PER_USER_ARRIVAL_RATES):
+            print(f"\n{'='*50}")
+            print(f"每用户到达率 [{rate_idx+1}/{len(PER_USER_ARRIVAL_RATES)}]: {per_user_rate}/s")
+            print(f"{'='*50}")
 
-            scenario = create_small_scale_config(n_uavs=n_uavs, n_users=n_users)
-            generator = self._create_task_generator(scenario)
+            results = {algo: [] for algo in algorithms}
+            price_histories = {}
 
-            # 动态计算仿真时间
-            sim_time = calculate_simulation_time(n_users, tasks_per_user=5, arrival_rate=total_arrival_rate)
+            for n_users in user_counts:
+                # 计算总到达率 = 用户数 × 每用户到达率
+                total_arrival_rate = n_users * per_user_rate
+                print(f"\n--- 用户数: {n_users} (总到达率: {total_arrival_rate:.1f}/s) ---")
 
-            # 使用任务队列生成器（泊松到达过程）
-            queue_config = TaskQueueConfig(
-                arrival_rate=total_arrival_rate,       # 总到达率
-                simulation_time=sim_time,
-                task_generator=generator,
-                n_users=n_users,
-                seed=self.seed + n_users
-            )
+                scenario = create_small_scale_config(n_uavs=n_uavs, n_users=n_users)
+                generator = self._create_task_generator(scenario)
 
-            queue_generator = TaskQueueGenerator(queue_config)
-            task_queue = queue_generator.generate_task_queue(n_users=n_users)
-            tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
-            tasks.sort(key=lambda t: t.task_id)
+                # 动态计算仿真时间
+                sim_time = calculate_simulation_time(n_users, tasks_per_user=5, arrival_rate=total_arrival_rate)
 
-            # === 新增: 创建用户并初始化移动状态 ===
-            users = self._create_users_with_mobility(n_users, scenario, enable_mobility=True)
+                # 使用任务队列生成器（泊松到达过程）
+                queue_config = TaskQueueConfig(
+                    arrival_rate=total_arrival_rate,       # 总到达率
+                    simulation_time=sim_time,
+                    task_generator=generator,
+                    n_users=n_users,
+                    seed=self.seed + rate_idx * 100 + n_users  # 不同速率使用不同种子
+                )
 
-            # === 新增: 根据到达时间更新用户位置 ===
-            self._update_user_positions_for_tasks(tasks, users, time_step=0.5)
+                queue_generator = TaskQueueGenerator(queue_config)
+                task_queue = queue_generator.generate_task_queue(n_users=n_users)
+                tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
+                tasks.sort(key=lambda t: t.task_id)
 
-            task_dicts = tasks_to_dict_list(tasks)
+                # === 新增: 创建用户并初始化移动状态 ===
+                users = self._create_users_with_mobility(n_users, scenario, enable_mobility=True)
 
-            # === 新增: 更新任务字典中的用户位置 ===
-            self._update_task_dicts_with_positions(task_dicts, users)
+                # === 新增: 根据到达时间更新用户位置 ===
+                self._update_user_positions_for_tasks(tasks, users, time_step=0.5)
 
-            uav_resources = scenario.get_uav_resources()
-            cloud_resources = scenario.get_cloud_resources()
+                task_dicts = tasks_to_dict_list(tasks)
 
-            # 先运行Proposed获取在线SW，用于计算正确的竞争比
-            self.proposed._reset_tracking(n_uavs)
-            proposed_result_temp, tracker_temp = self._run_with_price_tracking(
-                tasks, scenario, n_batches=20
-            )
-            online_sw_temp = proposed_result_temp.social_welfare
+                # === 新增: 更新任务字典中的用户位置 ===
+                self._update_task_dicts_with_positions(task_dicts, users)
 
-            # 计算离线最优（传入在线SW确保竞争比>=1）
-            offline_sw = self._compute_offline_optimal_real(
-                task_dicts, uav_resources, cloud_resources,
-                online_sw=online_sw_temp
-            )
+                uav_resources = scenario.get_uav_resources()
+                cloud_resources = scenario.get_cloud_resources()
 
-            for algo in algorithms:
-                if algo == "Proposed":
-                    # 复用之前运行的结果
-                    result = proposed_result_temp
-                    price_histories[n_users] = tracker_temp.get_price_history()
-                elif algo in self.paper_baselines:
-                    # 论文算法使用特殊处理
-                    result = self.paper_baselines[algo].run(
-                        task_dicts, uav_resources, cloud_resources
-                    )
-                else:
-                    result = self.baseline_runner.run_single_baseline(
-                        algo, task_dicts, uav_resources, cloud_resources
-                    )
+                # 先运行Proposed获取在线SW，用于计算正确的竞争比
+                self.proposed._reset_tracking(n_uavs)
+                proposed_result_temp, tracker_temp = self._run_with_price_tracking(
+                    tasks, scenario, n_batches=20
+                )
+                online_sw_temp = proposed_result_temp.social_welfare
 
-                metrics = self._extract_full_metrics(result, offline_sw)
-                results[algo].append({
-                    'n_users': n_users,
-                    'metrics': metrics
-                })
-                print(f"  {algo}: SW={metrics.social_welfare:.2f}, "
-                      f"Success={metrics.success_rate*100:.1f}%")
+                # 计算离线最优（传入在线SW确保竞争比>=1）
+                offline_sw = self._compute_offline_optimal_real(
+                    task_dicts, uav_resources, cloud_resources,
+                    online_sw=online_sw_temp
+                )
 
-        # 保存结果
-        self.all_results['exp2_results'] = results
-        self.all_results['exp2_price_histories'] = price_histories
+                for algo in algorithms:
+                    if algo == "Proposed":
+                        # 复用之前运行的结果
+                        result = proposed_result_temp
+                        price_histories[n_users] = tracker_temp.get_price_history()
+                    elif algo in self.paper_baselines:
+                        # 论文算法使用特殊处理
+                        result = self.paper_baselines[algo].run(
+                            task_dicts, uav_resources, cloud_resources
+                        )
+                    else:
+                        result = self.baseline_runner.run_single_baseline(
+                            algo, task_dicts, uav_resources, cloud_resources
+                        )
 
-        # 打印表格
-        self._print_scalability_table(results, user_counts, "社会福利",
-                                      lambda m: m.social_welfare)
-        self._print_scalability_table(results, user_counts, "成功率(%)",
-                                      lambda m: m.success_rate * 100)
+                    metrics = self._extract_full_metrics(result, offline_sw)
+                    results[algo].append({
+                        'n_users': n_users,
+                        'metrics': metrics
+                    })
+                    print(f"  {algo}: SW={metrics.social_welfare:.2f}, "
+                          f"Success={metrics.success_rate*100:.1f}%")
 
-        return results
+            # 保存该速率下的结果
+            results_by_rate[per_user_rate] = results
+            price_histories_by_rate[per_user_rate] = price_histories
+
+            # 打印该速率下的表格
+            print(f"\n--- 每用户到达率 {per_user_rate}/s 结果汇总 ---")
+            self._print_scalability_table(results, user_counts, "社会福利",
+                                          lambda m: m.social_welfare)
+            self._print_scalability_table(results, user_counts, "成功率(%)",
+                                          lambda m: m.success_rate * 100)
+
+        # 保存结果（兼容两种格式）
+        self.all_results['exp2_results'] = results_by_rate.get(SMALL_SCALE_PER_USER_RATE, list(results_by_rate.values())[0] if results_by_rate else {})
+        self.all_results['exp2_results_by_rate'] = results_by_rate
+        self.all_results['exp2_price_histories'] = price_histories_by_rate
+
+        return results_by_rate
 
     # ============ 实验3: 小规模UAV扩展 ============
 
     def run_exp3(self) -> Dict:
-        """实验3: 小规模UAV扩展
+        """实验3: 小规模UAV扩展 - 支持多速率遍历
 
         根据experiment_params.py设计：
-        - 使用每用户到达率：0.15/s
+        - 使用每用户到达率列表：PER_USER_ARRIVAL_RATES
         - 固定用户数：50
         - 预期成功率趋势：UAV 3→8，成功率31%→73%
         """
         print("\n" + "=" * 70)
         print("实验3: 小规模UAV扩展")
-        print(f"每用户到达率: {SMALL_SCALE_PER_USER_RATE}/s")
+        print(f"每用户到达率列表: {PER_USER_ARRIVAL_RATES}/s")
         print(f"固定用户数: 50")
         print("=" * 70)
 
@@ -1510,97 +1543,111 @@ class RealExperimentRunnerV9:
         algorithms = ["Proposed", "Greedy", "Edge-Only", "Cloud-Only", "B12-DelayOpt",
                       "MAPPO-Attention"]
 
-        # 总到达率 = 用户数 × 每用户到达率
-        total_arrival_rate = n_users * SMALL_SCALE_PER_USER_RATE
-        print(f"总到达率: {total_arrival_rate:.1f}/s")
+        # 结果按每用户到达率分组
+        results_by_rate = {}
+        price_histories_by_rate = {}
 
-        results = {algo: [] for algo in algorithms}
-        price_histories = {}
+        # 遍历每用户到达率列表
+        for rate_idx, per_user_rate in enumerate(PER_USER_ARRIVAL_RATES):
+            # 总到达率 = 用户数 × 每用户到达率
+            total_arrival_rate = n_users * per_user_rate
+            print(f"\n{'='*50}")
+            print(f"每用户到达率 [{rate_idx+1}/{len(PER_USER_ARRIVAL_RATES)}]: {per_user_rate}/s (总到达率: {total_arrival_rate:.1f}/s)")
+            print(f"{'='*50}")
 
-        for n_uavs in uav_counts:
-            print(f"\n--- UAV数: {n_uavs} ---")
+            results = {algo: [] for algo in algorithms}
+            price_histories = {}
 
-            scenario = create_small_scale_config(n_uavs=n_uavs, n_users=n_users)
-            generator = self._create_task_generator(scenario)
+            for n_uavs in uav_counts:
+                print(f"\n--- UAV数: {n_uavs} ---")
 
-            # 动态计算仿真时间
-            sim_time = calculate_simulation_time(n_users, tasks_per_user=5, arrival_rate=total_arrival_rate)
+                scenario = create_small_scale_config(n_uavs=n_uavs, n_users=n_users)
+                generator = self._create_task_generator(scenario)
 
-            # 使用任务队列生成器（泊松到达过程）
-            queue_config = TaskQueueConfig(
-                arrival_rate=total_arrival_rate,       # 总到达率
-                simulation_time=sim_time,
-                task_generator=generator,
-                n_users=n_users,
-                seed=self.seed + n_uavs
-            )
+                # 动态计算仿真时间
+                sim_time = calculate_simulation_time(n_users, tasks_per_user=5, arrival_rate=total_arrival_rate)
 
-            queue_generator = TaskQueueGenerator(queue_config)
-            task_queue = queue_generator.generate_task_queue(n_users=n_users)
-            tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
-            tasks.sort(key=lambda t: t.task_id)
+                # 使用任务队列生成器（泊松到达过程）
+                queue_config = TaskQueueConfig(
+                    arrival_rate=total_arrival_rate,       # 总到达率
+                    simulation_time=sim_time,
+                    task_generator=generator,
+                    n_users=n_users,
+                    seed=self.seed + rate_idx * 100 + n_uavs  # 不同速率使用不同种子
+                )
 
-            # === 新增: 创建用户并初始化移动状态 ===
-            users = self._create_users_with_mobility(n_users, scenario, enable_mobility=True)
+                queue_generator = TaskQueueGenerator(queue_config)
+                task_queue = queue_generator.generate_task_queue(n_users=n_users)
+                tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
+                tasks.sort(key=lambda t: t.task_id)
 
-            # === 新增: 根据到达时间更新用户位置 ===
-            self._update_user_positions_for_tasks(tasks, users, time_step=0.5)
+                # === 新增: 创建用户并初始化移动状态 ===
+                users = self._create_users_with_mobility(n_users, scenario, enable_mobility=True)
 
-            task_dicts = tasks_to_dict_list(tasks)
+                # === 新增: 根据到达时间更新用户位置 ===
+                self._update_user_positions_for_tasks(tasks, users, time_step=0.5)
 
-            # === 新增: 更新任务字典中的用户位置 ===
-            self._update_task_dicts_with_positions(task_dicts, users)
+                task_dicts = tasks_to_dict_list(tasks)
 
-            uav_resources = scenario.get_uav_resources()
-            cloud_resources = scenario.get_cloud_resources()
+                # === 新增: 更新任务字典中的用户位置 ===
+                self._update_task_dicts_with_positions(task_dicts, users)
 
-            # 先运行Proposed获取在线SW，用于计算正确的竞争比
-            self.proposed._reset_tracking(n_uavs)
-            proposed_result_temp, tracker_temp = self._run_with_price_tracking(
-                tasks, scenario, n_batches=20
-            )
-            online_sw_temp = proposed_result_temp.social_welfare
+                uav_resources = scenario.get_uav_resources()
+                cloud_resources = scenario.get_cloud_resources()
 
-            # 计算离线最优（传入在线SW确保竞争比>=1）
-            offline_sw = self._compute_offline_optimal_real(
-                task_dicts, uav_resources, cloud_resources,
-                online_sw=online_sw_temp
-            )
+                # 先运行Proposed获取在线SW，用于计算正确的竞争比
+                self.proposed._reset_tracking(n_uavs)
+                proposed_result_temp, tracker_temp = self._run_with_price_tracking(
+                    tasks, scenario, n_batches=20
+                )
+                online_sw_temp = proposed_result_temp.social_welfare
 
-            for algo in algorithms:
-                if algo == "Proposed":
-                    # 复用之前运行的结果
-                    result = proposed_result_temp
-                    price_histories[n_uavs] = tracker_temp.get_price_history()
-                elif algo in self.paper_baselines:
-                    # 论文算法使用特殊处理
-                    result = self.paper_baselines[algo].run(
-                        task_dicts, uav_resources, cloud_resources
-                    )
-                else:
-                    result = self.baseline_runner.run_single_baseline(
-                        algo, task_dicts, uav_resources, cloud_resources
-                    )
+                # 计算离线最优（传入在线SW确保竞争比>=1）
+                offline_sw = self._compute_offline_optimal_real(
+                    task_dicts, uav_resources, cloud_resources,
+                    online_sw=online_sw_temp
+                )
 
-                metrics = self._extract_full_metrics(result, offline_sw)
-                results[algo].append({
-                    'n_uavs': n_uavs,
-                    'metrics': metrics
-                })
-                print(f"  {algo}: SW={metrics.social_welfare:.2f}, "
-                      f"Success={metrics.success_rate*100:.1f}%")
+                for algo in algorithms:
+                    if algo == "Proposed":
+                        # 复用之前运行的结果
+                        result = proposed_result_temp
+                        price_histories[n_uavs] = tracker_temp.get_price_history()
+                    elif algo in self.paper_baselines:
+                        # 论文算法使用特殊处理
+                        result = self.paper_baselines[algo].run(
+                            task_dicts, uav_resources, cloud_resources
+                        )
+                    else:
+                        result = self.baseline_runner.run_single_baseline(
+                            algo, task_dicts, uav_resources, cloud_resources
+                        )
 
-        # 保存结果
-        self.all_results['exp3_results'] = results
-        self.all_results['exp3_price_histories'] = price_histories
+                    metrics = self._extract_full_metrics(result, offline_sw)
+                    results[algo].append({
+                        'n_uavs': n_uavs,
+                        'metrics': metrics
+                    })
+                    print(f"  {algo}: SW={metrics.social_welfare:.2f}, "
+                          f"Success={metrics.success_rate*100:.1f}%")
 
-        # 打印表格
-        self._print_scalability_table(results, uav_counts, "社会福利",
-                                      lambda m: m.social_welfare, var_name="UAV数")
-        self._print_scalability_table(results, uav_counts, "成功率(%)",
-                                      lambda m: m.success_rate * 100, var_name="UAV数")
+            # 保存该速率下的结果
+            results_by_rate[per_user_rate] = results
+            price_histories_by_rate[per_user_rate] = price_histories
 
-        return results
+            # 打印该速率下的表格
+            print(f"\n--- 每用户到达率 {per_user_rate}/s 结果汇总 ---")
+            self._print_scalability_table(results, uav_counts, "社会福利",
+                                          lambda m: m.social_welfare, var_name="UAV数")
+            self._print_scalability_table(results, uav_counts, "成功率(%)",
+                                          lambda m: m.success_rate * 100, var_name="UAV数")
+
+        # 保存结果（兼容两种格式）
+        self.all_results['exp3_results'] = results_by_rate.get(SMALL_SCALE_PER_USER_RATE, list(results_by_rate.values())[0] if results_by_rate else {})
+        self.all_results['exp3_results_by_rate'] = results_by_rate
+        self.all_results['exp3_price_histories'] = price_histories_by_rate
+
+        return results_by_rate
 
     # ============ 实验4: 大规模用户扩展 ============
 
@@ -2519,21 +2566,22 @@ class RealExperimentRunnerV9:
             results_by_rate = {1.0: self.all_results['exp2_results']}
         else:
             return
+        # 与 run_exp2() 中的配置保持一致
         user_counts = [10, 20, 30, 40, 50]
+        n_uavs = 5  # 固定UAV数
 
         report = f"""# 实验2: 小规模用户扩展
 
 **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-## 实验配置 (CADEC论文参数)
+## 实验配置
 
 | 参数 | 值 |
 |------|-----|
 | 区域大小 | 200m × 200m |
-| UAV数量 | 5 (固定) |
+| UAV数量 | {n_uavs} (固定) |
 | 用户数量 | {user_counts} |
-| 到达速率 | {CADEC_ARRIVAL_RATES}/s |
-| 仿真时间 | {CADEC_TIMESLOT_DURATION}s |
+| 每用户到达率 | {SMALL_SCALE_PER_USER_RATE}/s |
 | 对比算法 | 6 种 |
 
 ---
@@ -2674,21 +2722,22 @@ class RealExperimentRunnerV9:
             results_by_rate = {1.0: self.all_results['exp3_results']}
         else:
             return
-        uav_counts = [8, 10, 12, 14, 16]
+        # 与 run_exp3() 中的配置保持一致
+        uav_counts = [3, 4, 5, 6, 7, 8]
+        n_users = 50  # 固定用户数
 
         report = f"""# 实验3: 小规模UAV扩展
 
 **生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-## 实验配置 (CADEC论文参数)
+## 实验配置
 
 | 参数 | 值 |
 |------|-----|
 | 区域大小 | 200m × 200m |
-| 用户数量 | 70 (固定) |
+| 用户数量 | {n_users} (固定) |
 | UAV数量 | {uav_counts} |
-| 到达速率 | {CADEC_ARRIVAL_RATES}/s |
-| 仿真时间 | {CADEC_TIMESLOT_DURATION}s |
+| 每用户到达率 | {SMALL_SCALE_PER_USER_RATE}/s |
 | 对比算法 | 6 种 |
 
 ---
