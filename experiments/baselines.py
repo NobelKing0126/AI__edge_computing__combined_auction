@@ -533,16 +533,37 @@ class BaselineAlgorithm:
             user_payoff_gini = 0.0
         
         # 4.6 服务提供商利润指标
-        # 收入 = 成功任务数 * 平均价格 (基于资源使用量)
-        avg_compute_per_task = (sum(self.uav_compute_used.values()) + self.cloud_compute_used) / max(n, 1)
-        compute_price = 1e-9  # 每FLOP价格
-        provider_revenue = success_count * avg_compute_per_task * compute_price
-        
-        # 成本 = 能耗成本 + 运营固定成本
-        energy_cost = total_energy * 0.01  # 每焦耳0.01
-        fixed_cost = n_uavs * 0.1  # 每UAV固定成本
-        provider_cost = energy_cost + fixed_cost
-        
+        # 收入 = 成功任务的用户支付价格之和
+        provider_revenue = sum(
+            r.get('price_paid', 0) for i, r in enumerate(task_results)
+            if r.get('success', False) and i < len(tasks)
+        )
+
+        # 成本计算
+        # 1. 计算成本 (元/GFLOPS·s)
+        cost_compute = 0.01
+        compute_cost = cost_compute * (sum(self.uav_compute_used.values()) + self.cloud_compute_used) / 1e9
+
+        # 2. 能量成本 (元/kJ)
+        cost_energy = 0.05
+        energy_cost = cost_energy * total_energy / 1000
+
+        # 3. 传输成本 (元/MB) - 使用实际数据大小
+        cost_trans = 0.001
+        total_data_size_bytes = sum(
+            tasks[i].get('data_size', 0) for i, r in enumerate(task_results)
+            if r.get('success', False) and i < len(tasks)
+        )
+        total_data_size_mb = total_data_size_bytes / (1024 * 1024)
+        trans_cost = cost_trans * total_data_size_mb
+
+        # 4. 悬停成本 (元/s)
+        cost_hover = 0.1
+        service_time = 1.0  # 默认服务时间
+        hover_cost = cost_hover * n_uavs * service_time
+
+        provider_cost = compute_cost + energy_cost + trans_cost + hover_cost
+
         provider_profit = provider_revenue - provider_cost
         provider_profit_margin = (provider_profit / provider_revenue * 100) if provider_revenue > 0 else 0.0
         

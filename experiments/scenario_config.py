@@ -40,10 +40,10 @@ _system_config = SystemConfig()
 # 小规模实验云端配置 (200m x 200m) - V22: 目标成功率70-90%
 # 核心调整: tasks_per_user从5改为2
 _SMALL_SCALE_CLOUD = {
-    'F_c': 50.0e9,            # 云端算力 50.0 GFLOPS (V22: +43%)
-    'F_per_task_max': 20.0e9,  # 单任务最大 20.0 GFLOPS (V22: +43%)
+    'F_c': 10.0e9,            # 云端算力 10.0 GFLOPS (V27: 收紧资源，从50→10 GFLOPS)
+    'F_per_task_max': 3.0e9,  # 单任务最大 3.0 GFLOPS (V27: 从20→3 GFLOPS)
     'T_propagation': 0.02,    # 传播延迟 20ms (V22: -20%)
-    'max_concurrent_tasks': 50,  # 最大并发 50 个任务 (V22: +43%)
+    'max_concurrent_tasks': 10, # 最大并发 10 个任务 (V27: 从50→10)
 }
 
 # 小规模实验任务配置 - V22: 极大幅放宽deadline，极大幅减少图像数
@@ -64,10 +64,10 @@ _SMALL_SCALE_TASKS = {
 
 # 大规模实验云端配置 (1000m x 1000m) - V22: 目标成功率70-90%
 _LARGE_SCALE_CLOUD = {
-    'F_c': 100.0e9,            # 云端算力 100 GFLOPS (V22: +43%)
-    'F_per_task_max': 25.0e9,  # 单任务最大 25.0 GFLOPS (V22: +39%)
+    'F_c': 15.0e9,            # 云端算力 15.0 GFLOPS (V27: 收紧资源，从100→15 GFLOPS)
+    'F_per_task_max': 4.0e9,     # 单任务最大 4.0 GFLOPS (V27: 从25→4 GFLOPS)
     'T_propagation': 0.02,    # 传播延迟 20ms (V22: -33%)
-    'max_concurrent_tasks': 60,  # 最大并发 60 个任务 (V22: +50%)
+    'max_concurrent_tasks': 15,  # 最大并发 15 个任务 (V27: 从60→15)
 }
 
 # 大规模实验任务配置 - V22: 极大幅放宽deadline，极大幅减少图像数
@@ -186,7 +186,7 @@ class ScenarioConfig:
     compute_efficiency: bool         # 是否计算算法效率指标
     
     # 有默认值的参数（必须放在最后）
-    tasks_per_user: int = 2      # 每个用户提交的任务数量 (V22: 从5改为2)
+    tasks_per_user: int = 10     # 每个用户提交的任务数量 (V27: 从2改为10，增加任务密度，目标成功率60-90%)
     fault_probability: float = 0.05  # 故障参数（仅小规模）
     seed: int = 42               # 随机种子
     
@@ -249,7 +249,7 @@ class ScenarioConfig:
 # ============ 预定义场景 ============
 
 def create_small_scale_config(n_uavs: int = 5, n_users: int = 30,
-                              tasks_per_user: int = 5) -> ScenarioConfig:
+                              tasks_per_user: int = 10) -> ScenarioConfig:  # V27: 默认10任务/用户
     """
     创建小规模场景配置
 
@@ -273,12 +273,12 @@ def create_small_scale_config(n_uavs: int = 5, n_users: int = 30,
         # 区域：200m × 200m
         area_size=200.0,
 
-        # UAV配置 - V22: 目标成功率70-90%
-        # 小规模场景：200m x 200m，大幅增强资源
+        # UAV配置 - V27: 收紧资源，目标成功率60-90%
+        # 小规模场景：200m x 200m
         uav_config=UAVConfig(
             n_uavs=n_uavs,
-            compute_capacity=50.0e9,              # 50.0 GFLOPS (V22: +43%)
-            energy_capacity=2500e3,               # 电池容量 2500kJ (V22: +39%)
+            compute_capacity=15.0e9,              # 15.0 GFLOPS (V27: 收紧资源，从50→15)
+            energy_capacity=1200e3,              # 电池容量 1200kJ (V27: 收紧资源，从2500→1200)
             height=80.0,                          # 飞行高度 80m
             cover_radius=350.0,                   # 覆盖半径 350m (V22: +9%)
             hover_power=_system_config.uav.P_hover,
@@ -322,7 +322,7 @@ def create_small_scale_config(n_uavs: int = 5, n_users: int = 30,
 
 
 def create_large_scale_config(n_uavs: int = 15, n_users: int = 100,
-                              tasks_per_user: int = 5) -> ScenarioConfig:
+                              tasks_per_user: int = 10) -> ScenarioConfig:  # V27: 默认10任务/用户
     """
     创建大规模场景配置
 
@@ -338,8 +338,8 @@ def create_large_scale_config(n_uavs: int = 15, n_users: int = 100,
     Returns:
         ScenarioConfig
     """
-    # 大规模实验使用不同的UAV算力 (V22: 目标成功率70-90%)
-    large_scale_f_max = 60.0e9  # 60.0 GFLOPS (V22: +50%)
+    # 大规模实验使用不同的UAV算力 (V27: 收紧资源，目标成功率60-90%)
+    large_scale_f_max = 20.0e9  # 20.0 GFLOPS (V27: 收紧资源，从60→20)
 
     return ScenarioConfig(
         name=f"大规模场景 ({n_uavs}UAV, {n_users}用户, {n_users*tasks_per_user}任务)",
@@ -348,11 +348,11 @@ def create_large_scale_config(n_uavs: int = 15, n_users: int = 100,
         # 区域：1000m × 1000m
         area_size=1000.0,
 
-        # UAV配置 - V22: 目标成功率70-90%
+        # UAV配置 - V27: 收紧资源，目标成功率60-90%
         uav_config=UAVConfig(
             n_uavs=n_uavs,
-            compute_capacity=large_scale_f_max,         # 60.0 GFLOPS (V22: +50%)
-            energy_capacity=2500e3,                     # 2500kJ (V22: +39%)
+            compute_capacity=large_scale_f_max,         # 20.0 GFLOPS (V27: 收紧资源)
+            energy_capacity=1200e3,                      # 电池容量 1200kJ (V27: 收紧资源，从2500→1200)
             height=100.0,                              # 飞行高度 100m
             cover_radius=550.0,                        # 覆盖半径 550m (V22: +15%)
             hover_power=_system_config.uav.P_hover,
@@ -438,30 +438,32 @@ EXP1_CONFIG = ExperimentConfig(
 )
 
 # 实验2：小规模-固定UAV变用户数 (V26: 均匀分布用户范围)
+# 与 run_real_experiments_v9.py 中的 run_exp2() 保持一致
 EXP2_CONFIG = ExperimentConfig(
     exp_id=2,
     name="小规模用户扩展",
-    description="200m×200m, 固定5 UAV, 用户数{10,20,30,40}",
+    description="200m×200m, 固定5 UAV, 用户数{10,20,30,40,50}",
     scenario_type=ScenarioType.SMALL_SCALE,
     fixed_param="uav",
     fixed_value=5,
     variable_param="user",
-    variable_values=[10, 20, 30, 40],
-    baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only", "B12-DelayOpt"],
+    variable_values=[10, 20, 30, 40, 50],
+    baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only", "B12-DelayOpt", "MAPPO-Attention"],
     compute_competitive_ratio=True
 )
 
-# 实验3：小规模-固定用户变UAV数 (V26: 固定20用户, UAV从4开始)
+# 实验3：小规模-固定用户变UAV数
+# 与 run_real_experiments_v9.py 中的 run_exp3() 保持一致
 EXP3_CONFIG = ExperimentConfig(
     exp_id=3,
     name="小规模UAV扩展",
-    description="200m×200m, 固定20用户, UAV数{4,5,6,7,8}",
+    description="200m×200m, 固定50用户, UAV数{3,4,5,6,7,8}",
     scenario_type=ScenarioType.SMALL_SCALE,
     fixed_param="user",
-    fixed_value=20,
+    fixed_value=50,
     variable_param="uav",
-    variable_values=[4, 5, 6, 7, 8],
-    baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only", "B12-DelayOpt"],
+    variable_values=[3, 4, 5, 6, 7, 8],
+    baseline_algorithms=["Proposed", "Greedy", "Edge-Only", "Cloud-Only", "B12-DelayOpt", "MAPPO-Attention"],
     compute_competitive_ratio=True
 )
 

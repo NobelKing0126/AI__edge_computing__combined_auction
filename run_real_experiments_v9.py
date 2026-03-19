@@ -110,7 +110,7 @@ LARGE_SCALE_PER_USER_RATE = 0.06  # 大规模：每用户每16.7秒一个任务 
 
 # 实验2/3使用的每用户到达率列表（用于多速率遍历）
 # 与报告生成中的多速率支持保持一致
-PER_USER_ARRIVAL_RATES = [0.08, 0.10, 0.12, 0.15, 0.20]  # 每用户到达率 (任务/秒)
+PER_USER_ARRIVAL_RATES = [0.3, 0.5, 0.8, 1.0, 1.5]  # 每用户到达率 (任务/秒, V27: 提高到达率，使系统进入高负载状态，成功率60-90%)
 
 def calculate_simulation_time(n_users: int, tasks_per_user: int = 5,
                               arrival_rate: float = 1.0) -> float:

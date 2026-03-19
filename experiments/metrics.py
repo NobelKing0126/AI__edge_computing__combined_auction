@@ -63,11 +63,14 @@ class TaskMetric:
     recovered: bool = False
     recovery_delay: float = 0.0
     checkpoint_used: bool = False
-    
+
     # === 新增: 用户收益相关 ===
     price_paid: float = 0.0           # 用户支付的价格 P_{i,l,j}
     payoff: float = 0.0               # 用户收益 = utility - price_paid
     priority_class: str = 'medium'    # 优先级类别: high/medium/low
+
+    # === 新增: 数据大小 (用于计算传输成本) ===
+    data_size: float = 0.0            # 数据大小 (字节)
 
 
 @dataclass
@@ -205,10 +208,11 @@ class MetricsCalculator:
                         recovery_delay: float = 0.0,
                         checkpoint_used: bool = False,
                         price_paid: float = 0.0,
-                        priority_class: str = 'medium'):
+                        priority_class: str = 'medium',
+                        data_size: float = 0.0):
         """
         添加任务结果 (完整版)
-        
+
         Args:
             task_id: 任务ID
             success: 是否成功
@@ -227,19 +231,20 @@ class MetricsCalculator:
             checkpoint_used: 是否使用Checkpoint
             price_paid: 用户支付的价格
             priority_class: 优先级类别 (high/medium/low)
+            data_size: 数据大小 (字节)
         """
         is_high_priority = priority >= 0.7
-        
+
         # 计算用户收益
         payoff = (utility - price_paid) if success else 0.0
-        
+
         # 根据优先级确定类别
         if priority_class == 'medium':
             if priority >= 0.7:
                 priority_class = 'high'
             elif priority <= 0.3:
                 priority_class = 'low'
-        
+
         self.task_metrics.append(TaskMetric(
             task_id=task_id,
             success=success,
@@ -258,7 +263,8 @@ class MetricsCalculator:
             checkpoint_used=checkpoint_used,
             price_paid=price_paid,
             payoff=payoff,
-            priority_class=priority_class
+            priority_class=priority_class,
+            data_size=data_size
         ))
         
         # 更新资源使用
@@ -542,13 +548,14 @@ class MetricsCalculator:
         for uav_id, used in self.uav_compute_used.items():
             compute_cost += cost_compute * (used / 1e9)  # 转换为GFLOPS
         compute_cost += cost_compute * (self.cloud_compute_used / 1e9)
-        
+
         # 2. 能量成本
         energy_cost = cost_energy * sum(m.energy for m in self.task_metrics) / 1000  # 转换为kJ
-        
-        # 3. 传输成本 (假设每任务平均10MB)
-        trans_cost = cost_trans * len([m for m in self.task_metrics if m.success]) * 10
-        
+
+        # 3. 传输成本 (使用实际数据大小，转换为MB)
+        total_data_size_mb = sum(m.data_size for m in self.task_metrics if m.success) / (1024 * 1024)
+        trans_cost = cost_trans * total_data_size_mb
+
         # 4. 悬停成本
         hover_cost = cost_hover * self.n_uavs * service_time
         
