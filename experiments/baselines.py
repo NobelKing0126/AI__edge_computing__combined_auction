@@ -656,33 +656,58 @@ class EdgeOnlyBaseline(BaselineAlgorithm):
         for i, task in enumerate(tasks):
             uav_id = i % n_uavs
             task_uav_map[i] = uav_id
-        
+
+        # 获取或设置UAV剩余能量
+        uav_remaining_energy = []
+        for uav in uav_resources:
+            if 'remaining_energy' in uav:
+                uav_remaining_energy.append(uav['remaining_energy'])
+            else:
+                uav_remaining_energy.append(uav.get('E_max', self.config.uav.E_max))
+
         for i, task in enumerate(tasks):
             uav_id = task_uav_map[i]
             f_max = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
             uav_pos = uav_positions[uav_id]
-            
+            E_remain = uav_remaining_energy[uav_id]
+
+            # 获取UAV当前队列长度
+            queue_size = self.uav_task_count.get(uav_id, 0)
+
             C_total = task.get('compute_size', 10e9)
             data_size = task.get('data_size', 1e6)
             deadline = task.get('deadline', 5.0)
             priority = task.get('priority', 0.5)
-            
+
             # 获取用户位置
             user_pos = task.get('user_pos', (1000, 1000))
-            
+
             # 使用真实信道模型计算上传速率
             upload_rate = self._compute_upload_rate(user_pos, uav_pos)
             T_upload = data_size / upload_rate
-            
-            # 边缘计算时延 (全部在边缘)
-            T_compute = C_total / f_max
-            
+
+            # 计算能量预算（与proposed算法一致）
+            E_budget = min(E_remain / (queue_size + 1), 0.3 * self.config.uav.E_max)
+
+            # 考虑队列竞争的算力分配（UAV算力会被多个任务共享）
+            effective_f_max = f_max / max(queue_size + 1, 1)
+
+            # 边缘计算时延（考虑算力竞争）
+            T_compute = C_total / effective_f_max
+
             T_total = T_upload + T_compute
-            
-            # 能耗
-            energy = self.kappa_edge * (f_max ** 2) * C_total
-            
-            success = T_total <= deadline
+
+            # 检查时延和能量约束
+            T_comm = T_upload  # Edge-Only没有传输和返回时延
+            T_budget = deadline - T_comm
+
+            # 边缘能耗（实际使用的算力）
+            energy = self.kappa_edge * (effective_f_max ** 2) * C_total
+
+            # 严格检查约束（与proposed算法一致）
+            success = (T_compute <= T_budget and
+                      energy <= E_budget and
+                      T_total <= deadline)
             utility = 1.0 if success else 0.0
             
             result = {
@@ -759,9 +784,18 @@ class CloudOnlyBaseline(BaselineAlgorithm):
         user_ids = set(task.get('user_id', i) for i, task in enumerate(tasks))
         n_users = max(1, len(user_ids))
 
+        # 获取UAV剩余能量（V28: 添加能量约束检查，与其他baseline对齐）
+        uav_remaining_energy = []
+        for uav in uav_resources:
+            if 'remaining_energy' in uav:
+                uav_remaining_energy.append(uav['remaining_energy'])
+            else:
+                uav_remaining_energy.append(uav.get('E_max', self.config.uav.E_max))
+
         for i, task in enumerate(tasks):
             uav_id = i % n_uavs
             uav_pos = uav_positions[uav_id]
+            E_remain = uav_remaining_energy[uav_id]
 
             C_total = task.get('compute_size', 10e9)
             data_size = task.get('data_size', 1e6)
@@ -777,10 +811,10 @@ class CloudOnlyBaseline(BaselineAlgorithm):
             T_trans, T_propagation_total, T_cloud = self._compute_cloud_path_delay(
                 data_size, C_total, n_concurrent, n_users
             )
-            
+
             # 总时延 = 上传 + 云端路径
             T_total = T_upload + T_trans + T_propagation_total + T_cloud
-            
+
             # UAV中继能耗（接收+转发，无计算）
             P_rx = self.config.uav.P_rx  # 接收功率
             P_tx = self.config.uav.P_tx  # 发射功率
@@ -790,8 +824,15 @@ class CloudOnlyBaseline(BaselineAlgorithm):
             E_tx = P_tx * T_trans_up     # 转发到云端
             E_download = P_tx * T_return # 返回结果给用户
             energy = E_rx + E_tx + E_download
-            
-            success = T_total <= deadline
+
+            # V28: 添加能量约束检查（与其他baseline对齐）
+            # Cloud-Only虽然主要消耗云端资源，但UAV中继也需要能量
+            # 使用与Edge-Only相同的能量预算计算方式
+            queue_size = self.uav_task_count.get(uav_id, 0)
+            E_budget = min(E_remain / (queue_size + 1), 0.3 * self.config.uav.E_max)
+
+            # 严格检查约束（与proposed算法一致）
+            success = (T_total <= deadline and energy <= E_budget)
             utility = 1.0 if success else 0.0
             
             result = {

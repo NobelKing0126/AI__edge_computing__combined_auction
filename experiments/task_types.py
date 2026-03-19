@@ -259,66 +259,64 @@ class TaskTypeConfig:
 # 目标: 成功率60-90%，用户扩展呈下降趋势，UAV扩展呈上升趋势
 # 关键调整: V24 - 中间复杂度，目标成功率60-90%
 
-# 小规模实验任务配置（V24: 目标成功率65-85%）
-# MobileNetV2 0.3 GFLOPS/image, UAV 50 GFLOPS
-# 10-25 images = 3-7.5 GFLOPS
-# 单UAV处理约 0.06-0.15秒
+# 小规模实验任务配置（V28: 强时延敏感，deadline <= 100ms）
+# MobileNetV2 0.3 GFLOPS/image, UAV 15 GFLOPS (小规模)
+# 强时延敏感任务: deadline <= 100 ms
 LATENCY_SENSITIVE_CONFIG_SMALL = TaskTypeConfig(
     task_type=TaskType.LATENCY_SENSITIVE,
     model_spec=MOBILENETV2_SPEC,
     min_images=10,
     max_images=25,
-    min_deadline=1.0,  # V27: 收紧，从8秒→1秒
-    max_deadline=3.0,  # V27: 收紧，从16秒→3秒
+    min_deadline=0.05,  # V28: 强时延敏感，50ms
+    max_deadline=0.10,  # V28: 强时延敏感，100ms
     min_priority=0.6,
     max_priority=0.9,
-    description="Latency-Sensitive-Small (MobileNetV2, 10-25 images, 8-16s deadline)"
+    description="Latency-Sensitive-Small (MobileNetV2, 10-25 images, 50-100ms deadline)"
 )
 
-# MobileNetV2 0.3 GFLOPS/image, UAV 50 GFLOPS
+# 计算密集型任务: deadline <= 10 s
+# MobileNetV2 0.3 GFLOPS/image, UAV 15 GFLOPS (小规模)
 # 20-40 images = 6-12 GFLOPS
-# 单UAV处理约 0.12-0.24秒
 COMPUTE_INTENSIVE_CONFIG_SMALL = TaskTypeConfig(
     task_type=TaskType.COMPUTE_INTENSIVE,
     model_spec=MOBILENETV2_SPEC,
     min_images=20,
     max_images=40,
-    min_deadline=2.0,  # V27: 收紧，从20秒→2秒
-    max_deadline=5.0,  # V27: 收紧，从40秒→5秒
+    min_deadline=5.0,  # V28: 计算密集型，5s
+    max_deadline=10.0,  # V28: 计算密集型，10s
     min_priority=0.3,
     max_priority=0.6,
-    description="Compute-Intensive-Small (MobileNetV2, 20-40 images, 20-40s deadline)"
+    description="Compute-Intensive-Small (MobileNetV2, 20-40 images, 5-10s deadline)"
 )
 
-# 大规模实验任务配置（V24: 目标成功率60-80%）
-# MobileNetV2 0.3 GFLOPS/image, UAV 60 GFLOPS
-# 12-30 images = 3.6-9 GFLOPS
-# 单UAV处理约 0.06-0.15秒
+# 大规模实验任务配置（V28: 宽松时延敏感，deadline <= 1.5s）
+# MobileNetV2 0.3 GFLOPS/image, UAV 20 GFLOPS (大规模)
+# 相对宽松时延敏感任务: deadline <= 1.5 s
 LATENCY_SENSITIVE_CONFIG_LARGE = TaskTypeConfig(
     task_type=TaskType.LATENCY_SENSITIVE,
     model_spec=MOBILENETV2_SPEC,
     min_images=12,
     max_images=30,
-    min_deadline=1.5,  # V27: 收紧，从10秒→1.5秒
-    max_deadline=4.0,  # V27: 收紧，从20秒→4秒
+    min_deadline=0.5,  # V28: 宽松时延敏感，0.5s
+    max_deadline=1.5,  # V28: 宽松时延敏感，1.5s
     min_priority=0.6,
     max_priority=0.9,
-    description="Latency-Sensitive-Large (MobileNetV2, 12-30 images, 10-20s deadline)"
+    description="Latency-Sensitive-Large (MobileNetV2, 12-30 images, 0.5-1.5s deadline)"
 )
 
-# MobileNetV2 0.3 GFLOPS/image, UAV 60 GFLOPS
+# 计算密集型任务: deadline <= 10 s
+# MobileNetV2 0.3 GFLOPS/image, UAV 20 GFLOPS (大规模)
 # 25-50 images = 7.5-15 GFLOPS
-# 单UAV处理约 0.125-0.25秒
 COMPUTE_INTENSIVE_CONFIG_LARGE = TaskTypeConfig(
     task_type=TaskType.COMPUTE_INTENSIVE,
     model_spec=MOBILENETV2_SPEC,
     min_images=25,
     max_images=50,
-    min_deadline=3.0,  # V27: 收紧，从25秒→3秒
-    max_deadline=7.0,  # V27: 收紧，从50秒→7秒
+    min_deadline=5.0,  # V28: 计算密集型，5s
+    max_deadline=10.0,  # V28: 计算密集型，10s
     min_priority=0.3,
     max_priority=0.6,
-    description="Compute-Intensive-Large (MobileNetV2, 25-50 images, 25-50s deadline)"
+    description="Compute-Intensive-Large (MobileNetV2, 25-50 images, 5-10s deadline)"
 )
 
 # 默认配置（向后兼容）- 使用大规模配置作为默认
