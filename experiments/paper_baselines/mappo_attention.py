@@ -266,6 +266,9 @@ class MAPPOAttentionBaseline(BaselineAlgorithm):
         self.reward_history: List[float] = []
         self.fairness_history: List[float] = []
 
+        # 云端任务计数（用于资源竞争计算）
+        self.cloud_task_count = 0
+
     def run(
         self,
         tasks: List[Dict],
@@ -338,8 +341,8 @@ class MAPPOAttentionBaseline(BaselineAlgorithm):
                 task, best_uav, best_split, uav_resources, cloud_resources
             )
 
-            # 时延约束 (必须严格满足deadline)
-            if success and delay <= deadline * 0.9:
+            # 时延约束 (与Proposed对齐，使用标准deadline)
+            if success and delay <= deadline:
                 success_tasks.append(original_idx)
                 delays.append(delay)
                 energies.append(energy)
@@ -402,6 +405,13 @@ class MAPPOAttentionBaseline(BaselineAlgorithm):
             uav_utilizations=uav_utils,
             uav_loads=[self.uav_task_count.get(i, 0) for i in range(n_uavs)]
         )
+
+    def _reset_tracking(self, n_uavs: int = 5):
+        """重置资源跟踪（覆盖父类方法）"""
+        # 调用父类方法
+        super()._reset_tracking(n_uavs)
+        # 重置云端任务计数
+        self.cloud_task_count = 0
 
     def _build_uav_observations(
         self,
@@ -691,6 +701,9 @@ class MAPPOAttentionBaseline(BaselineAlgorithm):
         edge_flops = total_flops * split_ratio
         cloud_flops = total_flops * (1 - split_ratio)
 
+        # 获取任务deadline
+        deadline = task.get('deadline', 2.0)
+
         # Sub-THz上传时延
         upload_rate = self._compute_subthz_upload_rate(user_pos, uav_pos)
         if upload_rate <= 0:
@@ -698,22 +711,68 @@ class MAPPOAttentionBaseline(BaselineAlgorithm):
 
         upload_delay = data_size / upload_rate
 
-        # 边缘计算时延
-        f_edge = uav.get('f_max', self.system_config.uav.f_max)
-        edge_delay = edge_flops / f_edge if f_edge > 0 and edge_flops > 0 else 0
+        # 获取UAV当前状态
+        queue_size = self.uav_task_count.get(uav_id, 0)
+        uav_remaining_energy = uav.get('E_current', uav.get('E_max', self.system_config.uav.E_max))
 
-        # 云端路径时延
-        cloud_delay = self._compute_cloud_delay(cloud_flops)
+        # 考虑队列竞争的算力分配
+        f_edge = uav.get('f_max', self.system_config.uav.f_max)
+        effective_f_edge = f_edge / max(queue_size + 1, 1)
+
+        # 边缘计算时延（考虑算力竞争）
+        edge_delay = edge_flops / effective_f_edge if effective_f_edge > 0 and edge_flops > 0 else 0
+
+        # 云端路径时延（考虑云端资源竞争）
+        max_concurrent = cloud_resources.get('max_concurrent_tasks', 5)
+        cloud_competition_factor = min(self.cloud_task_count / max_concurrent, 1.0) if max_concurrent > 0 else 0
+        effective_cloud_flops = cloud_flops * (1 - cloud_competition_factor)
+
+        cloud_delay = self._compute_cloud_delay(effective_cloud_flops) if cloud_flops > 0 else 0
         backhaul_delay = self._compute_subthz_backhaul_delay(cloud_flops)
 
         total_delay = upload_delay + edge_delay + cloud_delay + backhaul_delay
 
-        # 能耗计算
-        energy = self._estimate_energy_subthz(
-            edge_flops, cloud_flops, upload_delay, edge_delay, dist
-        )
+        # 计算能量预算（与proposed算法一致）
+        E_budget = min(uav_remaining_energy / (queue_size + 1), 0.3 * self.system_config.uav.E_max)
 
-        return total_delay, energy, True
+        # 计算实际能耗（使用有效算力）
+        energy_edge = self.system_config.energy.kappa_edge * (effective_f_edge ** 2) * edge_flops
+        energy_cloud = self._estimate_energy_subthz_cloud(cloud_flops, backhaul_delay)
+        total_energy = energy_edge + energy_cloud
+
+        # 严格检查约束（与proposed算法一致）
+        T_comm = upload_delay + backhaul_delay
+        T_budget = deadline - T_comm
+
+        success = (edge_delay <= T_budget and
+                   cloud_delay <= T_budget and
+                   total_energy <= E_budget and
+                   total_delay <= deadline)
+
+        return total_delay, total_energy, success
+
+    def _estimate_energy_subthz_cloud(self, cloud_flops: float, backhaul_delay: float) -> float:
+        """
+        估算云端计算能耗（新增方法）
+
+        Args:
+            cloud_flops: 云端计算量
+            backhaul_delay: 回程时延
+
+        Returns:
+            云端能耗
+        """
+        if cloud_flops <= 0:
+            return 0.0
+
+        # 使用云端能耗系数（比边缘低）
+        kappa_cloud = self.system_config.energy.kappa_cloud if hasattr(self.system_config.energy, 'kappa_cloud') else 1e-29
+
+        # 云端计算能耗（使用总算力F_c）
+        f_cloud = self.system_config.cloud.F_c if hasattr(self.system_config.cloud, 'F_c') else 4.0e9
+        energy = kappa_cloud * (f_cloud ** 2) * cloud_flops
+
+        return energy
 
     def _update_resource_usage(
         self,
@@ -739,6 +798,10 @@ class MAPPOAttentionBaseline(BaselineAlgorithm):
 
         self.uav_compute_used[uav_id] = self.uav_compute_used.get(uav_id, 0) + edge_flops
         self.uav_task_count[uav_id] = self.uav_task_count.get(uav_id, 0) + 1
+
+        # 如果有云端计算，增加云端任务计数
+        if split_layer < total_layers:
+            self.cloud_task_count += 1
 
         # 更新UAV能量
         energy_used = self.system_config.energy.kappa_edge * (self.system_config.uav.f_max ** 2) * edge_flops
