@@ -377,7 +377,7 @@ class ProposedMethod:
                                     remaining_E: Dict,
                                     f_cloud: float, R_backhaul: float,
                                     n_concurrent: int = 1,
-                                    top_k: int = 3) -> Dict[int, Dict]:
+                                    top_k: int = 10) -> Dict[int, Dict]:
         """
         执行组合拍卖求解（拉格朗日对偶分解）
         
@@ -617,7 +617,7 @@ class ProposedMethod:
     def _auction_select_uav(self, task: Dict, uav_resources: List[Dict],
                             uav_positions: List[Tuple[float, float]],
                             remaining_E: Dict, f_cloud: float, R_backhaul: float,
-                            n_concurrent: int = 1, top_k: int = 3) -> Dict:
+                            n_concurrent: int = 1, top_k: int = 10) -> Dict:
         """
         拍卖机制：覆盖用户的UAV生成Top-K投标，选择最优投标
         
@@ -886,9 +886,9 @@ class ProposedMethod:
             }
             all_bids.append(bid)
         
-        # V29_R4: 按时延升序排序（而非按效用），优先选择时延最低的配置
-        # 这样可以提高满足 deadline 的成功率
-        all_bids.sort(key=lambda b: b['delay'])
+        # V29_R4: 按综合效用排序，同时考虑时延和能量约束
+        # 效用已包含时延成分（通过自由能），不应单独按时延排序
+        all_bids.sort(key=lambda b: b['utility'], reverse=True)
         return all_bids[:top_k]
     
     def _compute_optimal_split_for_uav(self, task: Dict, uav_id: int, uav_pos: Tuple[float, float],
