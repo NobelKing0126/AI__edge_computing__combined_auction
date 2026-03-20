@@ -273,14 +273,14 @@ def create_small_scale_config(n_uavs: int = 5, n_users: int = 30,
         # 区域：200m × 200m
         area_size=200.0,
 
-        # UAV配置 - V27: 收紧资源，目标成功率60-90%
+        # UAV配置 - V29: 修复实验3趋势，降低单机算力让总算力增长更合理
         # 小规模场景：200m x 200m
         uav_config=UAVConfig(
             n_uavs=n_uavs,
-            compute_capacity=15.0e9,              # 15.0 GFLOPS (V27: 收紧资源，从50→15)
-            energy_capacity=1200e3,              # 电池容量 1200kJ (V27: 收紧资源，从2500→1200)
+            compute_capacity=12.0e9,              # 12.0 GFLOPS (V29: 从15→12，修复UAV扩展趋势)
+            energy_capacity=1200e3,              # 电池容量 1200kJ
             height=80.0,                          # 飞行高度 80m
-            cover_radius=350.0,                   # 覆盖半径 350m (V22: +9%)
+            cover_radius=350.0,                   # 覆盖半径 350m
             hover_power=_system_config.uav.P_hover,
             compute_power_coeff=_system_config.energy.kappa_edge
         ),
