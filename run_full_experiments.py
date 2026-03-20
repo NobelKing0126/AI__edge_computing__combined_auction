@@ -886,8 +886,9 @@ class ProposedMethod:
             }
             all_bids.append(bid)
         
-        # 按效用降序排序，返回Top-K
-        all_bids.sort(key=lambda b: b['utility'], reverse=True)
+        # V29_R4: 按时延升序排序（而非按效用），优先选择时延最低的配置
+        # 这样可以提高满足 deadline 的成功率
+        all_bids.sort(key=lambda b: b['delay'])
         return all_bids[:top_k]
     
     def _compute_optimal_split_for_uav(self, task: Dict, uav_id: int, uav_pos: Tuple[float, float],
