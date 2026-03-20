@@ -45,9 +45,10 @@ class FreeEnergyConstants:
     W_COMPUTE: float = 0.30         # 算力风险权重 (提升)
 
     # 四分量自由能权重 (Active Inference)
-    W_TIME: float = 0.25            # 时间维度权重
-    W_HEALTH: float = 0.15           # 健康维度权重
-    W_PROGRESS: float = 0.20          # 进度维度权重
+    # V29_R4: 提升时延权重以提高成功率
+    W_TIME: float = 0.50             # 时间维度权重 (从0.25提升到0.50)
+    W_HEALTH: float = 0.10           # 健康维度权重 (从0.15降低到0.10)
+    W_PROGRESS: float = 0.20         # 进度维度权重 (保持不变)
 
 
 @dataclass(frozen=True)
