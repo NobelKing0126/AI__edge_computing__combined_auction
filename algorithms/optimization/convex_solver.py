@@ -615,15 +615,17 @@ class ConvexSolver:
             # 使用修正后的rho = (κc/κe)^(1/3)
             rho = self.compute_rho_ratio(kappa_edge, kappa_cloud)
 
-            # 无约束最优解
-            # f_edge* = sqrt(E_budget / (κe * Ce * (1 + rho^2)))
-            denominator = kappa_edge * C_edge * (1 + rho ** 2)
-            if denominator > 0:
-                f_edge_unconstrained = np.sqrt(E_budget / denominator)
-            else:
-                f_edge_unconstrained = f_avail
+            # 无约束最优解 (根据 idea38.txt 公式修正)
+            # A = κe * Ce * rho^2 + κc * Cc
+            # f_edge = rho * f_cloud, 先求 f_cloud
+            denominator = kappa_cloud * C_cloud + kappa_edge * C_edge * (rho ** 2)
 
-            f_cloud_unconstrained = rho * f_edge_unconstrained
+            if denominator > 0:
+                f_cloud_unconstrained = np.sqrt(E_budget / denominator)
+            else:
+                f_cloud_unconstrained = f_cloud_max
+
+            f_edge_unconstrained = rho * f_cloud_unconstrained
 
             # ========== Step 4: 检查边缘是否触顶 ==========
             step_reached = 4

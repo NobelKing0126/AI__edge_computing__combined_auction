@@ -253,21 +253,20 @@ class ResourceOptimizer:
         """
         Case 3：仅能量约束激活
 
-        拉格朗日乘子法求解，最优条件为边际能效相等（idea118.txt 2.6.3 Case 3）
+        根据 idea38.txt 2.6节修正版公式求解
 
-        最优条件：∂E_edge/∂f_edge = ∂E_cloud/∂f_cloud
-        => 2κ_edge · f_edge · C_edge = 2κ_cloud · f_cloud · C_cloud
-        => f_cloud = f_edge · (κ_edge · C_edge) / (κ_cloud · C_cloud)
+        最优比例：ρ = (κc/κe)^(1/3) （与计算量无关）
+        f_edge / f_cloud = ρ
+        即 f_edge = ρ * f_cloud
 
         代入能量约束：
         κ_edge · f_edge² · C_edge + κ_cloud · f_cloud² · C_cloud = E_budget
+        κ_edge · (ρ·f_cloud)² · C_edge + κ_cloud · f_cloud² · C_cloud = E_budget
+        f_cloud² · (κ_edge · ρ² · C_edge + κ_cloud · C_cloud) = E_budget
 
-        令 ratio = (κ_edge · C_edge) / (κ_cloud · C_cloud)
-        则 f_cloud = f_edge · ratio
-
-        代入得：
-        κ_edge · C_edge · f_edge² + κ_cloud · C_cloud · (f_edge · ratio)² = E_budget
-        f_edge² · (κ_edge · C_edge + κ_cloud · C_cloud · ratio²) = E_budget
+        令 A = κ_edge · ρ² · C_edge + κ_cloud · C_cloud
+        则 f_cloud = sqrt(E_budget / A)
+        f_edge = ρ * f_cloud
 
         Args:
             C_edge: 边缘计算量
@@ -300,23 +299,48 @@ class ResourceOptimizer:
                 f_cloud = f_cloud_avail
             return f_edge_avail, min(f_cloud, f_cloud_avail)
 
-        # 边缘-云端协同
-        # ratio = (κ_edge · C_edge) / (κ_cloud · C_cloud)
-        ratio = (self.kappa_edge * C_edge) / (self.kappa_cloud * C_cloud)
+        # 边缘-云端协同（根据 idea38.txt 修正）
+        # ρ = (κc/κe)^(1/3)，与计算量无关
+        rho = (self.kappa_cloud / self.kappa_edge) ** (1/3)
 
-        # 系数 A = κ_edge · C_edge + κ_cloud · C_cloud · ratio²
-        A = self.kappa_edge * C_edge + self.kappa_cloud * C_cloud * (ratio ** 2)
+        # A = κ_edge · ρ² · C_edge + κ_cloud · C_cloud
+        A = self.kappa_edge * (rho ** 2) * C_edge + self.kappa_cloud * C_cloud
 
-        if A < NUMERICAL.EPSILON:
+        # A 应该总是正数，但为了数值稳定性检查
+        # 注意：A 的量级可能很小（约 1e-19），不能用 NUMERICAL.EPSILON = 1e-10 来判断
+        if A <= 0:
             return f_edge_avail, f_cloud_avail
 
-        # f_edge = sqrt(E_budget / A)
-        f_edge = np.sqrt(E_budget / A)
-        f_cloud = f_edge * ratio
+        # 先求无约束最优解
+        f_cloud_unc = np.sqrt(E_budget / A)
+        f_edge_unc = rho * f_cloud_unc
 
-        # 限制到可用算力
-        f_edge = min(f_edge, f_edge_avail)
-        f_cloud = min(f_cloud, f_cloud_avail)
+        # 检查是否触顶，如果触顶则按剩余能量重新计算
+        if f_edge_unc >= f_edge_avail and f_cloud_unc >= f_cloud_avail:
+            # 两者都触顶，返回最大值
+            return f_edge_avail, f_cloud_avail
+        elif f_edge_unc >= f_edge_avail:
+            # 边缘触顶，用剩余能量计算云端
+            f_edge = f_edge_avail
+            E_used_by_edge = self.kappa_edge * (f_edge ** 2) * C_edge
+            E_remain = E_budget - E_used_by_edge
+            if E_remain > 0 and self.kappa_cloud * C_cloud > 0:
+                f_cloud = min(np.sqrt(E_remain / (self.kappa_cloud * C_cloud)), f_cloud_avail)
+            else:
+                f_cloud = 0.0
+        elif f_cloud_unc >= f_cloud_avail:
+            # 云端触顶，用剩余能量计算边缘
+            f_cloud = f_cloud_avail
+            E_used_by_cloud = self.kappa_cloud * (f_cloud ** 2) * C_cloud
+            E_remain = E_budget - E_used_by_cloud
+            if E_remain > 0 and self.kappa_edge * C_edge > 0:
+                f_edge = min(np.sqrt(E_remain / (self.kappa_edge * C_edge)), f_edge_avail)
+            else:
+                f_edge = 0.0
+        else:
+            # 都未触顶
+            f_edge = f_edge_unc
+            f_cloud = f_cloud_unc
 
         return f_edge, f_cloud
 
