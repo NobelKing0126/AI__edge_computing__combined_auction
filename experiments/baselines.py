@@ -1861,8 +1861,10 @@ class DelayOptimalBaseline(BaselineAlgorithm):
         sorted_indices = [idx for idx, _ in sorted(task_delays, key=lambda x: x[1])]
         
         # 资源跟踪
-        uav_energy_remain = {i: uav_resources[i].get('E_remain', 5000.0) 
+        uav_energy_remain = {i: uav_resources[i].get('E_remain', 5000.0)
                             for i in range(n_uavs)}
+        # 添加队列跟踪（与Proposed一致）
+        uav_queue_sizes = {i: 0 for i in range(n_uavs)}
         
         for idx in sorted_indices:
             task = tasks[idx]
@@ -1946,33 +1948,43 @@ class DelayOptimalBaseline(BaselineAlgorithm):
                     # 这里添加E_budget约束（单任务最多使用30%的E_max）
                     E_budget_ratio = 0.3  # 与Proposed一致
                     E_budget_max = E_budget_ratio * uav_resources[uav_id].get('E_max', self.config.uav.E_max)
-                    E_budget = E_budget_max - E_download  # E_comm已在计算中扣除
+
+                    # 与Proposed一致：考虑队列长度对E_budget的影响
+                    queue_size = uav_queue_sizes.get(uav_id, 0)
+                    if queue_size > 0:
+                        E_budget = min(uav_energy_remain[uav_id] / (queue_size + 1), E_budget_max) - E_download
+                    else:
+                        E_budget = min(uav_energy_remain[uav_id], E_budget_max) - E_download
 
                     # 检查能量约束：不能超过剩余能量和预算
                     if energy_candidate > uav_energy_remain[uav_id] or energy_candidate > E_budget:
                         continue
-                    
+
+                    # 检查deadline约束：只考虑满足deadline的组合
+                    if T_total > deadline:
+                        continue
+
                     if T_total < best_delay:
                         best_delay = T_total
                         best_uav = uav_id
                         best_split = split_ratio
                         best_energy = energy_candidate
             
-            # 修复：恢复deadline限制，但使用更合理的值
-            # B12-DelayOpt作为"延迟最优"基线，应该使用略微保守的deadline策略
-            # 使用0.9倍deadline（而不是0.7-0.8倍），既体现保守性又不会过度限制
-            deadline_margin = 0.9
-            effective_deadline = deadline * deadline_margin
-
-            if best_uav >= 0 and best_delay <= effective_deadline:
+            # 修复：与Proposed使用相同的deadline标准
+            # B12-DelayOpt不再使用额外的deadline限制，确保公平对比
+            # 约束差异应该来自算法本身的选择策略，而不是不同的约束标准
+            if best_uav >= 0 and best_delay <= deadline:
                 uav_id = best_uav
-                
+
                 C_edge = C_total * best_split
                 C_cloud = C_total * (1 - best_split)
-                
+
                 # 更新能量
                 uav_energy_remain[uav_id] -= best_energy
-                
+
+                # 更新队列大小（与Proposed一致）
+                uav_queue_sizes[uav_id] += 1
+
                 # 更新数据处理量统计（无论计算还是转发，都处理了数据）
                 self.uav_data_processed[uav_id] += data_size
                 

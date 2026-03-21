@@ -37,13 +37,13 @@ _system_config = SystemConfig()
 # - UAV数增加 → 成功率上升
 # 参见 config/experiment_params.py 中的详细分析
 
-# 小规模实验云端配置 (200m x 200m) - V29: 提升成功率~20%
+# 小规模实验云端配置 (200m x 200m) - V30: 提升成功率~20%
 # 调整：增加云端算力和并发数
 _SMALL_SCALE_CLOUD = {
-    'F_c': 14.0e9,            # 云端算力 14.0 GFLOPS (V29: 从10→14 GFLOPS，提升40%)
-    'F_per_task_max': 3.5e9,  # 单任务最大 3.5 GFLOPS (V29: 从3→3.5 GFLOPS)
+    'F_c': 20.0e9,            # 云端算力 20.0 GFLOPS (V30: 从14→20 GFLOPS)
+    'F_per_task_max': 5.0e9,  # 单任务最大 5.0 GFLOPS (V30: 从3.5→5.0 GFLOPS)
     'T_propagation': 0.02,    # 传播延迟 20ms
-    'max_concurrent_tasks': 14, # 最大并发 14 个任务 (V29: 从10→14)
+    'max_concurrent_tasks': 20, # 最大并发 20 个任务 (V30: 从14→20)
 }
 
 # 小规模实验任务配置 - V22: 极大幅放宽deadline，极大幅减少图像数

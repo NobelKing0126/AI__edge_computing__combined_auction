@@ -259,22 +259,22 @@ class TaskTypeConfig:
 # 目标: 成功率60-90%，用户扩展呈下降趋势，UAV扩展呈上升趋势
 # 关键调整: V24 - 中间复杂度，目标成功率60-90%
 
-# 小规模实验任务配置（V29: deadline 合理化调整）
-# MobileNetV2 0.3 GFLOPS/image, UAV 15 GFLOPS (小规模)
+# 小规模实验任务配置（V30: deadline 进一步放宽）
+# MobileNetV2 0.3 GFLOPS/image, UAV 14 GFLOPS (小规模)
 # 10-25 images = 3-7.5 GFLOPS
-# 计算时延: 3-7.5 GFLOPS / 15 GFLOPS = 200-500ms
+# 计算时延: 3-7.5 GFLOPS / 14 GFLOPS = 214-536ms
 # 通信时延: 约 50-200ms
-# V29: 高敏感任务 deadline 0.2-1s，计算密集型 5-15s（明显低于当前，不过分严格）
+# V30: 高敏感任务 deadline 1.0-3.0s（更大放宽，提升成功率）
 LATENCY_SENSITIVE_CONFIG_SMALL = TaskTypeConfig(
     task_type=TaskType.LATENCY_SENSITIVE,
     model_spec=MOBILENETV2_SPEC,
     min_images=10,
     max_images=25,
-    min_deadline=0.2,  # V29: 高敏感任务，0.2s
-    max_deadline=1.0,  # V29: 高敏感任务，1.0s
+    min_deadline=1.0,  # V30: 高敏感任务，1.0s（从0.2s放宽）
+    max_deadline=3.0,  # V30: 高敏感任务，3.0s（从1.0s放宽）
     min_priority=0.6,
     max_priority=0.9,
-    description="Latency-Sensitive-Small (MobileNetV2, 10-25 images, 0.2-1.0s deadline)"
+    description="Latency-Sensitive-Small (MobileNetV2, 10-25 images, 1.0-3.0s deadline)"
 )
 
 # 计算密集型任务: deadline 5-15 s

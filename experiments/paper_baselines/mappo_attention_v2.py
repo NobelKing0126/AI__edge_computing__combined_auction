@@ -619,8 +619,8 @@ class MAPPOAttentionBaselineV2(BaselineAlgorithm):
                 task, best_uav, best_split, uav_resources, cloud_resources
             )
 
-            # 时延约束 (必须严格满足deadline)
-            task_success = success and delay <= deadline * 0.9
+            # 时延约束 (统一使用标准deadline判定，与其他baseline对齐)
+            task_success = success and delay <= deadline
 
             if task_success:
                 success_tasks.append(original_idx)
