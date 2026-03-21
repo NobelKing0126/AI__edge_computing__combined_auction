@@ -731,9 +731,12 @@ class EdgeOnlyBaseline(BaselineAlgorithm):
             # 边缘能耗（实际使用的算力）
             energy = self.kappa_edge * (effective_f_max ** 2) * C_total
 
-            # 严格检查约束（与proposed算法一致）
+            # V31: 与 Proposed 对齐的严格约束检查
+            # Proposed 检查：T_total <= deadline AND energy <= E_budget
+            # 添加额外的 remaining_energy 检查，与 Proposed 一致
             success = (T_compute <= T_budget and
                       energy <= E_budget and
+                      energy <= E_remain and  # V31: 添加剩余能量检查
                       T_total <= deadline)
             utility = 1.0 if success else 0.0
             
@@ -858,8 +861,12 @@ class CloudOnlyBaseline(BaselineAlgorithm):
             queue_size = self.uav_task_count.get(uav_id, 0)
             E_budget = min(E_remain / (queue_size + 1), 0.3 * self.config.uav.E_max)
 
-            # 严格检查约束（与proposed算法一致）
-            success = (T_total <= deadline and energy <= E_budget)
+            # V31: 与 Proposed 对齐的严格约束检查
+            # Proposed 检查：T_total <= deadline AND energy <= E_budget
+            # 添加额外的 remaining_energy 检查，与 Proposed 一致
+            success = (T_total <= deadline and
+                      energy <= E_budget and
+                      energy <= E_remain)  # V31: 添加剩余能量检查
             utility = 1.0 if success else 0.0
             
             result = {
@@ -1949,12 +1956,13 @@ class DelayOptimalBaseline(BaselineAlgorithm):
                     E_budget_ratio = 0.3  # 与Proposed一致
                     E_budget_max = E_budget_ratio * uav_resources[uav_id].get('E_max', self.config.uav.E_max)
 
-                    # 与Proposed一致：考虑队列长度对E_budget的影响
+                    # V31: 与 Proposed 对齐的能量预算计算
+                    # 移除 E_download 的重复扣除，与 Proposed 保持一致
                     queue_size = uav_queue_sizes.get(uav_id, 0)
                     if queue_size > 0:
-                        E_budget = min(uav_energy_remain[uav_id] / (queue_size + 1), E_budget_max) - E_download
+                        E_budget = min(uav_energy_remain[uav_id] / (queue_size + 1), E_budget_max)
                     else:
-                        E_budget = min(uav_energy_remain[uav_id], E_budget_max) - E_download
+                        E_budget = min(uav_energy_remain[uav_id], E_budget_max)
 
                     # 检查能量约束：不能超过剩余能量和预算
                     if energy_candidate > uav_energy_remain[uav_id] or energy_candidate > E_budget:
