@@ -112,6 +112,9 @@ LARGE_SCALE_PER_USER_RATE = 0.06  # 大规模：每用户每16.7秒一个任务 
 # 与报告生成中的多速率支持保持一致
 PER_USER_ARRIVAL_RATES = [0.3, 0.5, 0.8, 1.0, 1.5]  # 每用户到达率 (任务/秒, V27: 提高到达率，使系统进入高负载状态，成功率60-90%)
 
+# 实验4/5使用的大规模场景每用户到达率列表（V29: 新增多速率维度）
+LARGE_SCALE_ARRIVAL_RATES = [0.03, 0.05, 0.08, 0.10, 0.15]  # 大规模每用户到达率 (任务/秒)
+
 def calculate_simulation_time(n_users: int, tasks_per_user: int = 5,
                               arrival_rate: float = 1.0) -> float:
     """
@@ -1652,16 +1655,16 @@ class RealExperimentRunnerV9:
     # ============ 实验4: 大规模用户扩展 ============
 
     def run_exp4(self) -> Dict:
-        """实验4: 大规模用户扩展
+        """实验4: 大规模用户扩展 - V29: 新增多速率维度
 
         根据experiment_params.py设计：
-        - 使用每用户到达率：0.08/s (每12.5秒一个任务)
+        - 使用每用户到达率列表：LARGE_SCALE_ARRIVAL_RATES
         - 固定UAV数：10
-        - 预期成功率趋势：用户50→200，成功率95%→74%
+        - 预期成功率趋势：用户50→200，成功率下降
         """
         print("\n" + "=" * 70)
         print("实验4: 大规模用户扩展")
-        print(f"每用户到达率: {LARGE_SCALE_PER_USER_RATE}/s")
+        print(f"每用户到达率列表: {LARGE_SCALE_ARRIVAL_RATES}/s")
         print(f"固定UAV数: 10")
         print("=" * 70)
 
@@ -1671,95 +1674,106 @@ class RealExperimentRunnerV9:
         algorithms = ["Proposed", "Greedy", "Edge-Only", "Cloud-Only",
                       "MAPPO-Attention"]
 
-        print(f"配置: 每用户 {tasks_per_user} 个任务, 固定 {n_uavs} 架UAV")
+        # 结果按每用户到达率分组
+        results_by_rate = {}
 
-        results = {algo: [] for algo in algorithms}
+        # 遍历每用户到达率列表
+        for rate_idx, per_user_rate in enumerate(LARGE_SCALE_ARRIVAL_RATES):
+            # 总到达率 = 用户数 × 每用户到达率
+            print(f"\n{'='*50}")
+            print(f"每用户到达率 [{rate_idx+1}/{len(LARGE_SCALE_ARRIVAL_RATES)}]: {per_user_rate}/s")
+            print(f"{'='*50}")
 
-        for n_users in user_counts:
-            # 计算总到达率 = 用户数 × 每用户到达率
-            total_arrival_rate = n_users * LARGE_SCALE_PER_USER_RATE
-            print(f"\n--- 用户数: {n_users} (总到达率: {total_arrival_rate:.1f}/s) ---")
+            results = {algo: [] for algo in algorithms}
 
-            scenario = create_large_scale_config(n_uavs=n_uavs, n_users=n_users, tasks_per_user=tasks_per_user)
-            generator = self._create_task_generator(scenario)
+            for n_users in user_counts:
+                total_arrival_rate = n_users * per_user_rate
+                print(f"\n--- 用户数: {n_users} (总到达率: {total_arrival_rate:.1f}/s) ---")
 
-            # 动态计算仿真时间
-            sim_time = calculate_simulation_time(n_users, tasks_per_user=tasks_per_user, arrival_rate=total_arrival_rate)
+                scenario = create_large_scale_config(n_uavs=n_uavs, n_users=n_users, tasks_per_user=tasks_per_user)
+                generator = self._create_task_generator(scenario)
 
-            # 使用任务队列生成器（泊松到达过程）
-            queue_config = TaskQueueConfig(
-                arrival_rate=total_arrival_rate,       # 总到达率
-                simulation_time=sim_time,
-                task_generator=generator,
-                n_users=n_users,
-                tasks_per_user=tasks_per_user,
-                seed=self.seed + n_users
-            )
+                # 动态计算仿真时间
+                sim_time = calculate_simulation_time(n_users, tasks_per_user=tasks_per_user, arrival_rate=total_arrival_rate)
 
-            queue_generator = TaskQueueGenerator(queue_config)
-            task_queue = queue_generator.generate_task_queue(n_users=n_users)
-            tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
-            tasks.sort(key=lambda t: t.task_id)
+                # 使用任务队列生成器（泊松到达过程）
+                queue_config = TaskQueueConfig(
+                    arrival_rate=total_arrival_rate,       # 总到达率
+                    simulation_time=sim_time,
+                    task_generator=generator,
+                    n_users=n_users,
+                    tasks_per_user=tasks_per_user,
+                    seed=self.seed + rate_idx * 1000 + n_users
+                )
 
-            # === 新增: 创建用户并初始化移动状态 ===
-            users = self._create_users_with_mobility(n_users, scenario, enable_mobility=True)
+                queue_generator = TaskQueueGenerator(queue_config)
+                task_queue = queue_generator.generate_task_queue(n_users=n_users)
+                tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
+                tasks.sort(key=lambda t: t.task_id)
 
-            # === 新增: 根据到达时间更新用户位置 ===
-            self._update_user_positions_for_tasks(tasks, users, time_step=0.5)
+                # === 新增: 创建用户并初始化移动状态 ===
+                users = self._create_users_with_mobility(n_users, scenario, enable_mobility=True)
 
-            task_dicts = tasks_to_dict_list(tasks)
+                # === 新增: 根据到达时间更新用户位置 ===
+                self._update_user_positions_for_tasks(tasks, users, time_step=0.5)
 
-            # === 新增: 更新任务字典中的用户位置 ===
-            self._update_task_dicts_with_positions(task_dicts, users)
+                task_dicts = tasks_to_dict_list(tasks)
 
-            uav_resources = scenario.get_uav_resources()
-            cloud_resources = scenario.get_cloud_resources()
+                # === 新增: 更新任务字典中的用户位置 ===
+                self._update_task_dicts_with_positions(task_dicts, users)
 
-            for algo in algorithms:
-                if algo == "Proposed":
-                    self.proposed._reset_tracking(n_uavs)
-                    result = self.proposed.run(task_dicts, uav_resources, cloud_resources)
-                elif algo in self.paper_baselines:
-                    result = self.paper_baselines[algo].run(
-                        task_dicts, uav_resources, cloud_resources
-                    )
-                else:
-                    result = self.baseline_runner.run_single_baseline(
-                        algo, task_dicts, uav_resources, cloud_resources
-                    )
+                uav_resources = scenario.get_uav_resources()
+                cloud_resources = scenario.get_cloud_resources()
 
-                metrics = self._extract_full_metrics(result)
-                results[algo].append({
-                    'n_users': n_users,
-                    'metrics': metrics
-                })
-                print(f"  {algo}: SW={metrics.social_welfare:.2f}, "
-                      f"Success={metrics.success_rate*100:.1f}%")
+                for algo in algorithms:
+                    if algo == "Proposed":
+                        self.proposed._reset_tracking(n_uavs)
+                        result = self.proposed.run(task_dicts, uav_resources, cloud_resources)
+                    elif algo in self.paper_baselines:
+                        result = self.paper_baselines[algo].run(
+                            task_dicts, uav_resources, cloud_resources
+                        )
+                    else:
+                        result = self.baseline_runner.run_single_baseline(
+                            algo, task_dicts, uav_resources, cloud_resources
+                        )
 
-        # 保存结果
-        self.all_results['exp4_results'] = results
+                    metrics = self._extract_full_metrics(result)
+                    results[algo].append({
+                        'n_users': n_users,
+                        'metrics': metrics
+                    })
+                    print(f"  {algo}: SW={metrics.social_welfare:.2f}, "
+                          f"Success={metrics.success_rate*100:.1f}%")
 
-        # 打印表格
-        self._print_scalability_table(results, user_counts, "社会福利",
-                                      lambda m: m.social_welfare)
-        self._print_scalability_table(results, user_counts, "成功率(%)",
-                                      lambda m: m.success_rate * 100)
+            # 打印当前速率的结果表格
+            print(f"\n--- 每用户到达率 {per_user_rate}/s 结果汇总 ---")
+            self._print_scalability_table(results, user_counts, "社会福利",
+                                          lambda m: m.social_welfare)
+            self._print_scalability_table(results, user_counts, "成功率(%)",
+                                          lambda m: m.success_rate * 100)
 
-        return results
+            # 保存当前速率的结果
+            results_by_rate[per_user_rate] = results
+
+        # 保存所有速率的结果
+        self.all_results['exp4_results_by_rate'] = results_by_rate
+
+        return results_by_rate
 
     # ============ 实验5: 大规模UAV扩展 ============
 
     def run_exp5(self) -> Dict:
-        """实验5: 大规模UAV扩展
+        """实验5: 大规模UAV扩展 - V29: 新增多速率维度
 
         根据experiment_params.py设计：
-        - 使用每用户到达率：0.08/s
+        - 使用每用户到达率列表：LARGE_SCALE_ARRIVAL_RATES
         - 固定用户数：150
-        - 预期成功率趋势：UAV 8→16，成功率83%→95%
+        - 预期成功率趋势：UAV 8→16，成功率上升
         """
         print("\n" + "=" * 70)
         print("实验5: 大规模UAV扩展")
-        print(f"每用户到达率: {LARGE_SCALE_PER_USER_RATE}/s")
+        print(f"每用户到达率列表: {LARGE_SCALE_ARRIVAL_RATES}/s")
         print(f"固定用户数: 150")
         print("=" * 70)
 
@@ -1769,82 +1783,92 @@ class RealExperimentRunnerV9:
         algorithms = ["Proposed", "Greedy", "Edge-Only", "Cloud-Only",
                       "MAPPO-Attention"]
 
-        # 总到达率 = 用户数 × 每用户到达率
-        total_arrival_rate = n_users * LARGE_SCALE_PER_USER_RATE
-        print(f"总到达率: {total_arrival_rate:.1f}/s")
-        print(f"配置: 每用户 {tasks_per_user} 个任务, 固定 {n_users} 个用户")
+        # 结果按每用户到达率分组
+        results_by_rate = {}
 
-        results = {algo: [] for algo in algorithms}
+        # 遍历每用户到达率列表
+        for rate_idx, per_user_rate in enumerate(LARGE_SCALE_ARRIVAL_RATES):
+            # 总到达率 = 用户数 × 每用户到达率
+            total_arrival_rate = n_users * per_user_rate
+            print(f"\n{'='*50}")
+            print(f"每用户到达率 [{rate_idx+1}/{len(LARGE_SCALE_ARRIVAL_RATES)}]: {per_user_rate}/s (总到达率: {total_arrival_rate:.1f}/s)")
+            print(f"{'='*50}")
 
-        for n_uavs in uav_counts:
-            print(f"\n--- UAV数: {n_uavs} ---")
+            results = {algo: [] for algo in algorithms}
 
-            scenario = create_large_scale_config(n_uavs=n_uavs, n_users=n_users, tasks_per_user=tasks_per_user)
-            generator = self._create_task_generator(scenario)
+            for n_uavs in uav_counts:
+                print(f"\n--- UAV数: {n_uavs} ---")
 
-            # 动态计算仿真时间
-            sim_time = calculate_simulation_time(n_users, tasks_per_user=tasks_per_user, arrival_rate=total_arrival_rate)
+                scenario = create_large_scale_config(n_uavs=n_uavs, n_users=n_users, tasks_per_user=tasks_per_user)
+                generator = self._create_task_generator(scenario)
 
-            # 使用任务队列生成器（泊松到达过程）
-            queue_config = TaskQueueConfig(
-                arrival_rate=total_arrival_rate,       # 总到达率
-                simulation_time=sim_time,
-                task_generator=generator,
-                n_users=n_users,
-                tasks_per_user=tasks_per_user,
-                seed=self.seed + n_uavs
-            )
+                # 动态计算仿真时间
+                sim_time = calculate_simulation_time(n_users, tasks_per_user=tasks_per_user, arrival_rate=total_arrival_rate)
 
-            queue_generator = TaskQueueGenerator(queue_config)
-            task_queue = queue_generator.generate_task_queue(n_users=n_users)
-            tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
-            tasks.sort(key=lambda t: t.task_id)
+                # 使用任务队列生成器（泊松到达过程）
+                queue_config = TaskQueueConfig(
+                    arrival_rate=total_arrival_rate,       # 总到达率
+                    simulation_time=sim_time,
+                    task_generator=generator,
+                    n_users=n_users,
+                    tasks_per_user=tasks_per_user,
+                    seed=self.seed + rate_idx * 1000 + n_uavs
+                )
 
-            # === 新增: 创建用户并初始化移动状态 ===
-            users = self._create_users_with_mobility(n_users, scenario, enable_mobility=True)
+                queue_generator = TaskQueueGenerator(queue_config)
+                task_queue = queue_generator.generate_task_queue(n_users=n_users)
+                tasks = generator.generate_from_queue([queue_generator.get_task_dict(task) for task in task_queue])
+                tasks.sort(key=lambda t: t.task_id)
 
-            # === 新增: 根据到达时间更新用户位置 ===
-            self._update_user_positions_for_tasks(tasks, users, time_step=0.5)
+                # === 新增: 创建用户并初始化移动状态 ===
+                users = self._create_users_with_mobility(n_users, scenario, enable_mobility=True)
 
-            task_dicts = tasks_to_dict_list(tasks)
+                # === 新增: 根据到达时间更新用户位置 ===
+                self._update_user_positions_for_tasks(tasks, users, time_step=0.5)
 
-            # === 新增: 更新任务字典中的用户位置 ===
-            self._update_task_dicts_with_positions(task_dicts, users)
+                task_dicts = tasks_to_dict_list(tasks)
 
-            uav_resources = scenario.get_uav_resources()
-            cloud_resources = scenario.get_cloud_resources()
+                # === 新增: 更新任务字典中的用户位置 ===
+                self._update_task_dicts_with_positions(task_dicts, users)
 
-            for algo in algorithms:
-                if algo == "Proposed":
-                    self.proposed._reset_tracking(n_uavs)
-                    result = self.proposed.run(task_dicts, uav_resources, cloud_resources)
-                elif algo in self.paper_baselines:
-                    result = self.paper_baselines[algo].run(
-                        task_dicts, uav_resources, cloud_resources
-                    )
-                else:
-                    result = self.baseline_runner.run_single_baseline(
-                        algo, task_dicts, uav_resources, cloud_resources
-                    )
+                uav_resources = scenario.get_uav_resources()
+                cloud_resources = scenario.get_cloud_resources()
 
-                metrics = self._extract_full_metrics(result)
-                results[algo].append({
-                    'n_uavs': n_uavs,
-                    'metrics': metrics
-                })
-                print(f"  {algo}: SW={metrics.social_welfare:.2f}, "
-                      f"Success={metrics.success_rate*100:.1f}%")
+                for algo in algorithms:
+                    if algo == "Proposed":
+                        self.proposed._reset_tracking(n_uavs)
+                        result = self.proposed.run(task_dicts, uav_resources, cloud_resources)
+                    elif algo in self.paper_baselines:
+                        result = self.paper_baselines[algo].run(
+                            task_dicts, uav_resources, cloud_resources
+                        )
+                    else:
+                        result = self.baseline_runner.run_single_baseline(
+                            algo, task_dicts, uav_resources, cloud_resources
+                        )
 
-        # 保存结果
-        self.all_results['exp5_results'] = results
+                    metrics = self._extract_full_metrics(result)
+                    results[algo].append({
+                        'n_uavs': n_uavs,
+                        'metrics': metrics
+                    })
+                    print(f"  {algo}: SW={metrics.social_welfare:.2f}, "
+                          f"Success={metrics.success_rate*100:.1f}%")
 
-        # 打印表格
-        self._print_scalability_table(results, uav_counts, "社会福利",
-                                      lambda m: m.social_welfare, var_name="UAV数")
-        self._print_scalability_table(results, uav_counts, "成功率(%)",
-                                      lambda m: m.success_rate * 100, var_name="UAV数")
+            # 打印当前速率的结果表格
+            print(f"\n--- 每用户到达率 {per_user_rate}/s 结果汇总 ---")
+            self._print_scalability_table(results, uav_counts, "社会福利",
+                                          lambda m: m.social_welfare, var_name="UAV数")
+            self._print_scalability_table(results, uav_counts, "成功率(%)",
+                                          lambda m: m.success_rate * 100, var_name="UAV数")
 
-        return results
+            # 保存当前速率的结果
+            results_by_rate[per_user_rate] = results
+
+        # 保存所有速率的结果
+        self.all_results['exp5_results_by_rate'] = results_by_rate
+
+        return results_by_rate
 
     # ============ 消融实验（真实运行） ============
 
