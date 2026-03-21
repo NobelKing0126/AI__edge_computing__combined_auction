@@ -37,13 +37,13 @@ _system_config = SystemConfig()
 # - UAV数增加 → 成功率上升
 # 参见 config/experiment_params.py 中的详细分析
 
-# 小规模实验云端配置 (200m x 200m) - V22: 目标成功率70-90%
-# 核心调整: tasks_per_user从5改为2
+# 小规模实验云端配置 (200m x 200m) - V29: 提升成功率~20%
+# 调整：增加云端算力和并发数
 _SMALL_SCALE_CLOUD = {
-    'F_c': 10.0e9,            # 云端算力 10.0 GFLOPS (V27: 收紧资源，从50→10 GFLOPS)
-    'F_per_task_max': 3.0e9,  # 单任务最大 3.0 GFLOPS (V27: 从20→3 GFLOPS)
-    'T_propagation': 0.02,    # 传播延迟 20ms (V22: -20%)
-    'max_concurrent_tasks': 10, # 最大并发 10 个任务 (V27: 从50→10)
+    'F_c': 14.0e9,            # 云端算力 14.0 GFLOPS (V29: 从10→14 GFLOPS，提升40%)
+    'F_per_task_max': 3.5e9,  # 单任务最大 3.5 GFLOPS (V29: 从3→3.5 GFLOPS)
+    'T_propagation': 0.02,    # 传播延迟 20ms
+    'max_concurrent_tasks': 14, # 最大并发 14 个任务 (V29: 从10→14)
 }
 
 # 小规模实验任务配置 - V22: 极大幅放宽deadline，极大幅减少图像数
@@ -273,14 +273,14 @@ def create_small_scale_config(n_uavs: int = 5, n_users: int = 30,
         # 区域：200m × 200m
         area_size=200.0,
 
-        # UAV配置 - V29: 修复实验3趋势，降低单机算力让总算力增长更合理
+        # UAV配置 - V29: 提升成功率~20%，适中的单机算力保持趋势
         # 小规模场景：200m x 200m
         uav_config=UAVConfig(
             n_uavs=n_uavs,
-            compute_capacity=12.0e9,              # 12.0 GFLOPS (V29: 从15→12，修复UAV扩展趋势)
-            energy_capacity=1200e3,              # 电池容量 1200kJ
+            compute_capacity=14.0e9,              # 14.0 GFLOPS (V29: 从12→14 GFLOPS，提升成功率)
+            energy_capacity=1400e3,              # 电池容量 1400kJ (V29: 从1200→1400)
             height=80.0,                          # 飞行高度 80m
-            cover_radius=350.0,                   # 覆盖半径 350m
+            cover_radius=380.0,                   # 覆盖半径 380m (V29: 从350→380m)
             hover_power=_system_config.uav.P_hover,
             compute_power_coeff=_system_config.energy.kappa_edge
         ),
