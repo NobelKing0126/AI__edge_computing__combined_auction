@@ -1958,10 +1958,13 @@ class DelayOptimalBaseline(BaselineAlgorithm):
                         best_split = split_ratio
                         best_energy = energy_candidate
             
-            # 修复：移除不合理的deadline限制
-            # B12-DelayOpt应该是"延迟最优基线"，使用与Proposed一致的deadline判断
-            # 之前的0.7-0.8倍限制是不合理的，会导致B12反而成功率更高（矛盾）
-            if best_uav >= 0 and best_delay <= deadline:
+            # 修复：恢复deadline限制，但使用更合理的值
+            # B12-DelayOpt作为"延迟最优"基线，应该使用略微保守的deadline策略
+            # 使用0.9倍deadline（而不是0.7-0.8倍），既体现保守性又不会过度限制
+            deadline_margin = 0.9
+            effective_deadline = deadline * deadline_margin
+
+            if best_uav >= 0 and best_delay <= effective_deadline:
                 uav_id = best_uav
                 
                 C_edge = C_total * best_split
