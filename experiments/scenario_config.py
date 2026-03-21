@@ -62,12 +62,12 @@ _SMALL_SCALE_TASKS = {
     }
 }
 
-# 大规模实验云端配置 (1000m x 1000m) - V22: 目标成功率70-90%
+# 大规模实验云端配置 (1000m x 1000m) - V29: 提升成功率~30%
 _LARGE_SCALE_CLOUD = {
-    'F_c': 15.0e9,            # 云端算力 15.0 GFLOPS (V27: 收紧资源，从100→15 GFLOPS)
-    'F_per_task_max': 4.0e9,     # 单任务最大 4.0 GFLOPS (V27: 从25→4 GFLOPS)
-    'T_propagation': 0.02,    # 传播延迟 20ms (V22: -33%)
-    'max_concurrent_tasks': 15,  # 最大并发 15 个任务 (V27: 从60→15)
+    'F_c': 20.0e9,            # 云端算力 20.0 GFLOPS (V29: 从15→20 GFLOPS，提升33%)
+    'F_per_task_max': 5.0e9,     # 单任务最大 5.0 GFLOPS (V29: 从4→5 GFLOPS)
+    'T_propagation': 0.02,    # 传播延迟 20ms
+    'max_concurrent_tasks': 20,  # 最大并发 20 个任务 (V29: 从15→20)
 }
 
 # 大规模实验任务配置 - V22: 极大幅放宽deadline，极大幅减少图像数
@@ -338,8 +338,8 @@ def create_large_scale_config(n_uavs: int = 15, n_users: int = 100,
     Returns:
         ScenarioConfig
     """
-    # 大规模实验使用不同的UAV算力 (V27: 收紧资源，目标成功率60-90%)
-    large_scale_f_max = 20.0e9  # 20.0 GFLOPS (V27: 收紧资源，从60→20)
+    # 大规模实验使用不同的UAV算力 (V29: 提升成功率~30%)
+    large_scale_f_max = 25.0e9  # 25.0 GFLOPS (V29: 从20→25 GFLOPS，提升25%)
 
     return ScenarioConfig(
         name=f"大规模场景 ({n_uavs}UAV, {n_users}用户, {n_users*tasks_per_user}任务)",
@@ -348,13 +348,13 @@ def create_large_scale_config(n_uavs: int = 15, n_users: int = 100,
         # 区域：1000m × 1000m
         area_size=1000.0,
 
-        # UAV配置 - V27: 收紧资源，目标成功率60-90%
+        # UAV配置 - V29: 提升成功率~30%
         uav_config=UAVConfig(
             n_uavs=n_uavs,
-            compute_capacity=large_scale_f_max,         # 20.0 GFLOPS (V27: 收紧资源)
-            energy_capacity=1200e3,                      # 电池容量 1200kJ (V27: 收紧资源，从2500→1200)
+            compute_capacity=large_scale_f_max,         # 25.0 GFLOPS (V29: 提升算力)
+            energy_capacity=1600e3,                      # 电池容量 1600kJ (V29: 从1200→1600)
             height=100.0,                              # 飞行高度 100m
-            cover_radius=550.0,                        # 覆盖半径 550m (V22: +15%)
+            cover_radius=580.0,                        # 覆盖半径 580m (V29: 从550→580m)
             hover_power=_system_config.uav.P_hover,
             compute_power_coeff=_system_config.energy.kappa_edge
         ),
