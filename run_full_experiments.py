@@ -856,12 +856,13 @@ class ProposedMethod:
             E_comm = P_rx * T_upload + P_tx * T_trans
             energy = E_compute + E_comm
 
-            # ========== 能量预算约束（idea38.txt） ==========
+            # ========== 能量预算约束（V31: 修复重复扣除E_comm） ==========
             # 计算实际能量预算：考虑队列竞争
+            # 不再从 E_budget 中扣除 E_comm，避免重复惩罚
             if queue_size > 0:
-                E_budget = min(remaining_energy / (queue_size + 1), E_budget_max) - E_comm
+                E_budget = min(remaining_energy / (queue_size + 1), E_budget_max)
             else:
-                E_budget = min(remaining_energy, E_budget_max) - E_comm
+                E_budget = min(remaining_energy, E_budget_max)
 
             # 检查约束：时延 + 能量预算
             if T_total > deadline or energy > remaining_energy or energy > E_budget:
@@ -886,10 +887,10 @@ class ProposedMethod:
             }
             all_bids.append(bid)
         
-        # V29_R4: 按综合效用排序，同时考虑时延和能量约束
-        # 效用已包含时延成分（通过自由能），不应单独按时延排序
+        # V31: 移除 top-k 筛选，保留所有可行投标
+        # 让更多投标参与 Phase 3 组合拍卖，提升成功率
         all_bids.sort(key=lambda b: b['utility'], reverse=True)
-        return all_bids[:top_k]
+        return all_bids  # 返回所有投标，不再限制 top_k
     
     def _compute_optimal_split_for_uav(self, task: Dict, uav_id: int, uav_pos: Tuple[float, float],
                                         f_edge: float, f_cloud: float, R_backhaul: float,
