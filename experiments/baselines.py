@@ -384,23 +384,27 @@ class BaselineAlgorithm:
         """运行基线算法"""
         raise NotImplementedError
     
-    def _track_task_result(self, result: Dict, uav_id: int, 
+    def _track_task_result(self, result: Dict, uav_id: int,
                            compute_edge: float = 0, compute_cloud: float = 0,
                            fault_occurred: bool = False, recovered: bool = False,
                            recovery_delay: float = 0, checkpoint_used: bool = False):
         """跟踪单个任务结果"""
+        # 修复：将计算量信息添加到result字典中，用于后续价格计算
+        result['C_edge'] = compute_edge
+        result['C_cloud'] = compute_cloud
+
         if result.get('success', False):
             self.uav_compute_used[uav_id] = self.uav_compute_used.get(uav_id, 0) + compute_edge
             self.uav_task_count[uav_id] = self.uav_task_count.get(uav_id, 0) + 1
             self.cloud_compute_used += compute_cloud
             self.channels_used += 1
-        
+
         if fault_occurred:
             self.fault_count += 1
             if recovered:
                 self.recovery_count += 1
                 self.recovery_delays.append(recovery_delay)
-        
+
         if checkpoint_used:
             self.checkpoint_attempts += 1
             if recovered or result.get('success', False):
@@ -534,6 +538,29 @@ class BaselineAlgorithm:
         
         # 4.6 服务提供商利润指标
         # 收入 = 成功任务的用户支付价格之和
+
+        # 首先为没有price_paid的result添加价格计算（修复baseline收入为0的问题）
+        for i, r in enumerate(task_results):
+            if i >= len(tasks):
+                break
+            if r.get('success', False) and ('price_paid' not in r or r.get('price_paid', 0) == 0):
+                # 基于实际使用的计算量计算价格
+                C_edge = r.get('C_edge', 0) if 'C_edge' in r else r.get('compute_edge', 0)
+                C_cloud = r.get('C_cloud', 0) if 'C_cloud' in r else r.get('compute_cloud', 0)
+
+                # 如果result中没有计算量信息，从任务中获取
+                if C_edge == 0 and C_cloud == 0:
+                    C_total = tasks[i].get('compute_size', 10e9)
+                    # 根据split_ratio估算（如果有的话）
+                    split_ratio = r.get('split_ratio', 0.5)
+                    C_edge = C_total * split_ratio
+                    C_cloud = C_total * (1 - split_ratio)
+
+                # 使用与Proposed一致的价格计算
+                base_price = 0.1  # 基础价格
+                compute_flops = C_edge + C_cloud
+                r['price_paid'] = base_price * compute_flops / 1e9
+
         provider_revenue = sum(
             r.get('price_paid', 0) for i, r in enumerate(task_results)
             if r.get('success', False) and i < len(tasks)
@@ -1913,9 +1940,16 @@ class DelayOptimalBaseline(BaselineAlgorithm):
                     
                     # 总能耗
                     energy_candidate = E_rx + E_compute + E_tx + E_download
-                    
-                    # 检查能量约束
-                    if energy_candidate > uav_energy_remain[uav_id]:
+
+                    # 修复：使用与Proposed一致的能量约束检查
+                    # Proposed检查：T_total <= deadline AND energy <= remaining_energy AND energy <= E_budget
+                    # 这里添加E_budget约束（单任务最多使用30%的E_max）
+                    E_budget_ratio = 0.3  # 与Proposed一致
+                    E_budget_max = E_budget_ratio * uav_resources[uav_id].get('E_max', self.config.uav.E_max)
+                    E_budget = E_budget_max - E_download  # E_comm已在计算中扣除
+
+                    # 检查能量约束：不能超过剩余能量和预算
+                    if energy_candidate > uav_energy_remain[uav_id] or energy_candidate > E_budget:
                         continue
                     
                     if T_total < best_delay:
@@ -1924,12 +1958,10 @@ class DelayOptimalBaseline(BaselineAlgorithm):
                         best_split = split_ratio
                         best_energy = energy_candidate
             
-            # 增加约束：只允许使用80%的截止时间，且高优先级任务需更严格
-            # 这使B12不再单纯优化时延而忽视其他因素
-            deadline_margin = 0.8 if priority < 0.7 else 0.7  # 高优先级更严格
-            effective_deadline = deadline * deadline_margin
-            
-            if best_uav >= 0 and best_delay <= effective_deadline:
+            # 修复：移除不合理的deadline限制
+            # B12-DelayOpt应该是"延迟最优基线"，使用与Proposed一致的deadline判断
+            # 之前的0.7-0.8倍限制是不合理的，会导致B12反而成功率更高（矛盾）
+            if best_uav >= 0 and best_delay <= deadline:
                 uav_id = best_uav
                 
                 C_edge = C_total * best_split
