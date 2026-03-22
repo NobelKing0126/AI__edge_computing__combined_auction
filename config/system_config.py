@@ -82,7 +82,7 @@ class ChannelConfig:
     beta_0: float = 3.5e-7  # 参考信道增益 (平衡版V3)
     N_0: float = 1e-18  # 噪声功率谱密度 (W/Hz)
     P_tx_user: float = 0.09  # 用户发射功率 0.09W (平衡版V3)
-    R_backhaul: float = 40e6  # 回程链路带宽 40Mbps = 40e6 bps (平衡版V3)
+    R_backhaul: float = 20e6  # 回程链路带宽 20Mbps = 20e6 bps (V10: 减少50%以增加cloud-only时延)
     num_channels: int = 8  # 可用信道数量 (平衡版V3)
 
 

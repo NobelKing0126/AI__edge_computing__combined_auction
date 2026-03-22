@@ -843,8 +843,8 @@ class CloudOnlyBaseline(BaselineAlgorithm):
                 data_size, C_total, n_concurrent, n_users
             )
 
-            # 总时延 = 上传 + 云端路径
-            T_total = T_upload + T_trans + T_propagation_total + T_cloud
+            # 总时延 = 上传 + 云端路径 + 返回时延
+            T_total = T_upload + T_trans + T_propagation_total + T_cloud + T_return
 
             # UAV中继能耗（接收+转发，无计算）
             P_rx = self.config.uav.P_rx  # 接收功率
@@ -1914,9 +1914,20 @@ class DelayOptimalBaseline(BaselineAlgorithm):
             best_delay = float('inf')
             best_split = 0.5
             best_energy = 0.0
-            
+
             for uav_id in range(n_uavs):
                 uav_pos = uav_positions[uav_id]
+
+                # 覆盖检查（与 Proposed 一致）
+                cover_radius = uav_resources[uav_id].get('R_cover', self.config.uav.R_cover)
+                uav_height = uav_resources[uav_id].get('z', self.config.uav.H)
+                H = uav_height
+                dx = user_pos[0] - uav_pos[0]
+                dy = user_pos[1] - uav_pos[1]
+                distance_3d = np.sqrt(dx**2 + dy**2 + H**2)
+                if distance_3d > cover_radius:
+                    continue  # 不在覆盖范围内，跳过该 UAV
+
                 upload_rate = self._compute_upload_rate(user_pos, uav_pos)
                 
                 f_max_uav = uav_resources[uav_id].get('f_max', self.config.uav.f_max)
@@ -1950,8 +1961,8 @@ class DelayOptimalBaseline(BaselineAlgorithm):
                         T_cloud = 0
                         T_propagation_total = 0
                     
-                    # 总时延：串行模型
-                    T_total = T_upload + T_edge + T_trans + T_propagation_total + T_cloud
+                    # 总时延：串行模型（包含返回时延）
+                    T_total = T_upload + T_edge + T_trans + T_propagation_total + T_cloud + T_download
                     
                     # 能耗计算 - UAV始终有转发/通信能耗
                     P_rx = self.config.uav.P_rx  # 接收功率
