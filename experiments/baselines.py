@@ -838,6 +838,9 @@ class CloudOnlyBaseline(BaselineAlgorithm):
             upload_rate = self._compute_upload_rate(user_pos, uav_pos)
             T_upload = data_size / upload_rate
 
+            # 计算返回时延（需要在总时延计算之前）
+            T_return = data_size * 0.01 / R_backhaul
+
             # 云端路径时延（包含资源竞争、传播延迟和用户配额限制）
             T_trans, T_propagation_total, T_cloud = self._compute_cloud_path_delay(
                 data_size, C_total, n_concurrent, n_users
@@ -850,7 +853,6 @@ class CloudOnlyBaseline(BaselineAlgorithm):
             P_rx = self.config.uav.P_rx  # 接收功率
             P_tx = self.config.uav.P_tx  # 发射功率
             T_trans_up = data_size / R_backhaul
-            T_return = data_size * 0.01 / R_backhaul
             E_rx = P_rx * T_upload       # 接收用户数据
             E_tx = P_tx * T_trans_up     # 转发到云端
             E_download = P_tx * T_return # 返回结果给用户
@@ -1948,7 +1950,12 @@ class DelayOptimalBaseline(BaselineAlgorithm):
                     
                     # 边缘计算时间
                     T_edge = C_edge / f_max_uav if C_edge > 0 else 0
-                    
+
+                    # 计算返回时延（需要在总时延计算之前）
+                    result_size = data_size * 0.01
+                    download_rate = upload_rate * 0.8
+                    T_download = result_size / download_rate
+
                     # 云端路径时间（包含资源竞争和传播延迟）
                     if split_layer < n_layers:
                         # 使用精确的特征大小
@@ -1980,12 +1987,9 @@ class DelayOptimalBaseline(BaselineAlgorithm):
                     else:
                         E_tx = 0
                     
-                    # UAV返回结果给用户的能耗（简化：假设结果数据量小）
-                    result_size = data_size * 0.01  # 结果约为原数据的1%
-                    download_rate = upload_rate * 0.8  # 下行速率略低
-                    T_download = result_size / download_rate
+                    # UAV返回结果给用户的能耗（T_download 已在上面计算）
                     E_download = P_tx * T_download
-                    
+
                     # 总能耗
                     energy_candidate = E_rx + E_compute + E_tx + E_download
 
