@@ -224,6 +224,91 @@ class BaselineAlgorithm:
         self.recovery_delays = []
         self.bidding_time = 0.0
         self.auction_time = 0.0
+
+    def _get_uav_positions(self, uav_resources: List[Dict], tasks: List[Dict] = None) -> List[Tuple[float, float]]:
+        """
+        获取UAV位置列表
+
+        优先级：
+        1. 从 uav_resources 中获取 'position' 字段
+        2. 从 uav_resources 中获取 'x', 'y' 字段（ScenarioConfig 格式）
+        3. 如果都没有，使用 K-means 基于用户位置优化部署
+
+        Args:
+            uav_resources: UAV资源列表
+            tasks: 任务列表（用于 K-means 优化，可选）
+
+        Returns:
+            UAV位置列表 [(x, y), ...]
+        """
+        n_uavs = len(uav_resources)
+        positions = []
+
+        for i, uav in enumerate(uav_resources):
+            # 优先检查 'position' 字段
+            if 'position' in uav:
+                positions.append(uav['position'])
+            # 检查 'x', 'y' 字段（ScenarioConfig 格式）
+            elif 'x' in uav and 'y' in uav:
+                positions.append((uav['x'], uav['y']))
+            else:
+                positions.append(None)
+
+        # 如果所有位置都能获取，直接返回
+        if all(p is not None for p in positions):
+            return positions
+
+        # 否则使用 K-means 优化部署
+        if tasks is not None and len(tasks) > 0:
+            user_positions = np.array([t.get('user_pos', (100, 100)) for t in tasks])
+            return self._kmeans_deploy(user_positions, n_uavs)
+
+        # 最后回退：基于用户区域中心均匀分布
+        # 估算用户区域中心（假设在 0-200 范围内）
+        center = (100, 100)  # 默认中心
+        radius = 80  # 分布半径
+        return [(center[0] + radius * np.cos(2 * np.pi * i / n_uavs),
+                 center[1] + radius * np.sin(2 * np.pi * i / n_uavs))
+                for i in range(n_uavs)]
+
+    def _kmeans_deploy(self, user_positions: np.ndarray, n_uavs: int, max_iter: int = 50) -> List[Tuple[float, float]]:
+        """K-means UAV部署优化"""
+        if len(user_positions) < n_uavs:
+            # 用户太少，使用均匀分布
+            center = np.mean(user_positions, axis=0) if len(user_positions) > 0 else np.array([100, 100])
+            radius = 50
+            return [(center[0] + radius * np.cos(2 * np.pi * i / n_uavs),
+                     center[1] + radius * np.sin(2 * np.pi * i / n_uavs))
+                    for i in range(n_uavs)]
+
+        # 初始化质心
+        rng = np.random.default_rng(42)
+        indices = rng.choice(len(user_positions), n_uavs, replace=False)
+        centroids = user_positions[indices].copy()
+
+        for _ in range(max_iter):
+            # 分配
+            distances = np.zeros((len(user_positions), n_uavs))
+            for i, pos in enumerate(user_positions):
+                for j, c in enumerate(centroids):
+                    distances[i, j] = np.sqrt((pos[0] - c[0])**2 + (pos[1] - c[1])**2)
+
+            assignments = np.argmin(distances, axis=1)
+
+            # 更新质心
+            new_centroids = np.zeros_like(centroids)
+            for j in range(n_uavs):
+                mask = assignments == j
+                if np.sum(mask) > 0:
+                    new_centroids[j] = user_positions[mask].mean(axis=0)
+                else:
+                    new_centroids[j] = centroids[j]
+
+            if np.allclose(centroids, new_centroids):
+                break
+            centroids = new_centroids
+
+        return [(c[0], c[1]) for c in centroids]
     
     def _compute_upload_rate(self, user_pos: Tuple[float, float], 
                              uav_pos: Tuple[float, float]) -> float:
@@ -668,16 +753,10 @@ class EdgeOnlyBaseline(BaselineAlgorithm):
         results = []
         n_uavs = len(uav_resources)
         self._reset_tracking(n_uavs)
-        
-        # 获取或设置UAV位置
-        uav_positions = []
-        for i, uav in enumerate(uav_resources):
-            if 'position' in uav:
-                uav_positions.append(uav['position'])
-            else:
-                # 默认均匀分布
-                uav_positions.append((400 + i * 300, 1000))
-        
+
+        # 获取UAV位置（使用统一的辅助方法，支持K-means优化）
+        uav_positions = self._get_uav_positions(uav_resources, tasks)
+
         # 均匀分配任务到UAV
         task_uav_map = {}
         for i, task in enumerate(tasks):
@@ -708,6 +787,22 @@ class EdgeOnlyBaseline(BaselineAlgorithm):
 
             # 获取用户位置
             user_pos = task.get('user_pos', (1000, 1000))
+
+            # V32: 覆盖检查（与 Proposed 对齐）
+            dx = user_pos[0] - uav_pos[0]
+            dy = user_pos[1] - uav_pos[1]
+            H = self.config.uav.H
+            distance_3d = np.sqrt(dx**2 + dy**2 + H**2)
+
+            if distance_3d > self.config.uav.R_cover:
+                # 不在覆盖范围内，标记失败
+                result = {
+                    'task_id': i, 'success': False, 'met_deadline': False,
+                    'delay': float('inf'), 'energy': 0, 'uav_id': uav_id,
+                    'utility': 0, 'priority': priority
+                }
+                results.append(result)
+                continue
 
             # 使用真实信道模型计算上传速率
             upload_rate = self._compute_upload_rate(user_pos, uav_pos)
@@ -796,13 +891,8 @@ class CloudOnlyBaseline(BaselineAlgorithm):
         # Store cloud_resources for use in helper methods
         self._current_cloud_resources = cloud_resources
 
-        # 获取UAV位置
-        uav_positions = []
-        for i, uav in enumerate(uav_resources):
-            if 'position' in uav:
-                uav_positions.append(uav['position'])
-            else:
-                uav_positions.append((400 + i * 300, 1000))
+        # 获取UAV位置（使用统一的辅助方法，支持K-means优化）
+        uav_positions = self._get_uav_positions(uav_resources, tasks)
 
         R_backhaul = self._compute_backhaul_rate()
         T_propagation = self._get_propagation_delay(cloud_resources)
@@ -833,6 +923,22 @@ class CloudOnlyBaseline(BaselineAlgorithm):
             deadline = task.get('deadline', 5.0)
             user_pos = task.get('user_pos', (1000, 1000))
             priority = task.get('priority', 0.5)
+
+            # V32: 覆盖检查（与 Proposed 对齐）
+            dx = user_pos[0] - uav_pos[0]
+            dy = user_pos[1] - uav_pos[1]
+            H = self.config.uav.H
+            distance_3d = np.sqrt(dx**2 + dy**2 + H**2)
+
+            if distance_3d > self.config.uav.R_cover:
+                # 不在覆盖范围内，标记失败
+                result = {
+                    'task_id': i, 'success': False, 'met_deadline': False,
+                    'delay': float('inf'), 'energy': 0, 'uav_id': uav_id,
+                    'utility': 0, 'priority': priority
+                }
+                results.append(result)
+                continue
 
             # 用户到UAV上传
             upload_rate = self._compute_upload_rate(user_pos, uav_pos)
@@ -919,15 +1025,10 @@ class GreedyBaseline(BaselineAlgorithm):
         results = []
         n_uavs = len(uav_resources)
         self._reset_tracking(n_uavs)
-        
-        # 获取UAV位置
-        uav_positions = []
-        for i, uav in enumerate(uav_resources):
-            if 'position' in uav:
-                uav_positions.append(uav['position'])
-            else:
-                uav_positions.append((400 + i * 300, 1000))
-        
+
+        # 获取UAV位置（使用统一的辅助方法，支持K-means优化）
+        uav_positions = self._get_uav_positions(uav_resources, tasks)
+
         # 跟踪剩余资源
         remaining_f = {i: r.get('f_max', self.config.uav.f_max) for i, r in enumerate(uav_resources)}
         remaining_E = {i: r.get('E_max', self.config.uav.E_max) for i, r in enumerate(uav_resources)}
@@ -1177,8 +1278,9 @@ class RandomAuctionBaseline(BaselineAlgorithm):
             T_upload = data_size / upload_rate
 
             T_edge = C_edge / f_edge
-            # V31: 使用精确的 feature_size 计算传输时延
-            feature_size = self._get_feature_size_at_layer(int(split_ratio * n_layers), model_spec, n_layers) if model_spec else data_size * split_ratio
+            # V31: 使用近似值计算传输时延（简化版本，避免依赖未定义的 model_spec）
+            # 假设传输数据量约为输入数据量的 10-30%（典型 DNN 切分点特征压缩）
+            feature_size = data_size * 0.2  # 使用固定的 20% 比例
             T_trans = feature_size / R_backhaul
             T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
             T_propagation_total = 2 * T_propagation

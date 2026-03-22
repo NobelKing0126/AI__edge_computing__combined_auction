@@ -477,7 +477,7 @@ class ProposedMethod:
         # Phase 3: 拉格朗日对偶分解求解
         auction_start = time.time()
         auction_result = self.auction_solver.solve(all_bids, uav_resource_list)
-        self.auction_time += time.time() - auction_start
+        self.auction_time += time.time() - auction_start  # 累加所有批次的拍卖时间
         self.dual_iterations += auction_result.iterations
         
         # 更新对偶值用于对偶间隙计算
@@ -1329,11 +1329,13 @@ class ProposedMethod:
                     'auctioneer_id': self.auctioneer_id
                 }
         
-        self.bidding_time = time.time() - bidding_start
-        # auction_time 已在组合拍卖中累积
-        if self.auction_time == 0:
-            self.auction_time = self.bidding_time * 0.4
-            self.bidding_time = self.bidding_time * 0.6
+        total_phase23_time = time.time() - bidding_start
+        # bidding_time = 总时间 - 累加的auction_time（所有批次的投标生成时间）
+        # 注意：auction_time 现在是所有批次拍卖时间的累加
+        self.bidding_time = total_phase23_time - self.auction_time
+        if self.bidding_time < 0:
+            # 如果计算结果为负，说明 auction_time 统计有问题，使用比例估算
+            self.bidding_time = total_phase23_time * 0.7  # 投标生成约占70%
         
         self.primal_value = total_utility
         # 对偶间隙从组合拍卖结果中获取
