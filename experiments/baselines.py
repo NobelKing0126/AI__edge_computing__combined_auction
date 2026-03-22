@@ -1167,11 +1167,13 @@ class RandomAuctionBaseline(BaselineAlgorithm):
             T_upload = data_size / upload_rate
 
             T_edge = C_edge / f_edge
-            T_trans = data_size * split_ratio * 0.5 / R_backhaul
+            # V31: 使用精确的 feature_size 计算传输时延
+            feature_size = self._get_feature_size_at_layer(int(split_ratio * n_layers), model_spec, n_layers) if model_spec else data_size * split_ratio
+            T_trans = feature_size / R_backhaul
             T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
             T_propagation_total = 2 * T_propagation
             T_return = data_size * 0.01 / R_backhaul
-            
+
             T_total = T_upload + T_edge + T_trans + T_propagation_total + T_cloud + T_return
             
             # 能耗（边缘计算 + 通信）
@@ -1419,7 +1421,12 @@ class HeuristicAllocationBaseline(BaselineAlgorithm):
             # 时延计算
             T_upload = data_size / upload_rate
             T_edge = C_edge / f_allocated
-            T_trans = data_size * 0.3 * 0.5 / R_backhaul
+            # V31: 使用精确的 feature_size 计算传输时延
+            model_spec = task.get('model_spec')
+            n_layers = task.get('n_layers', 100)
+            split_ratio = 0.3  # Heuristic-Alloc 固定30%切分
+            feature_size = self._get_feature_size_at_layer(int(split_ratio * n_layers), model_spec, n_layers) if model_spec else data_size * split_ratio
+            T_trans = feature_size / R_backhaul
             T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
             T_propagation_total = 2 * T_propagation
             T_return = data_size * 0.01 / R_backhaul
@@ -1528,7 +1535,11 @@ class NoDynamicPricingBaseline(BaselineAlgorithm):
 
             T_upload = data_size / upload_rate
             T_edge = C_edge / f_allocated
-            T_trans = data_size * 0.5 * 0.5 / R_backhaul
+            # V31: 使用精确的 feature_size 计算传输时延
+            model_spec = task.get('model_spec')
+            n_layers = task.get('n_layers', 100)
+            feature_size = self._get_feature_size_at_layer(int(split_ratio * n_layers), model_spec, n_layers) if model_spec else data_size * split_ratio
+            T_trans = feature_size / R_backhaul
             T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
             T_propagation_total = 2 * T_propagation
             
@@ -1663,7 +1674,11 @@ class FixedPricingBaseline(BaselineAlgorithm):
                 f_edge = min(uav_compute_avail[uav_id], uav_resources[uav_id].get('f_max', self.config.uav.f_max))
 
                 T_edge = C_edge / f_edge if f_edge > 0 else float('inf')
-                T_trans = data_size * split_ratio / R_backhaul
+                # V31: 使用精确的 feature_size 计算传输时延
+                model_spec = task.get('model_spec')
+                n_layers = task.get('n_layers', 100)
+                feature_size = self._get_feature_size_at_layer(int(split_ratio * n_layers), model_spec, n_layers) if model_spec else data_size * split_ratio
+                T_trans = feature_size / R_backhaul
                 T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
                 T_propagation_total = 2 * T_propagation
 
@@ -1691,7 +1706,11 @@ class FixedPricingBaseline(BaselineAlgorithm):
                                  uav_resources[uav_id].get('f_max', self.config.uav.f_max))
 
                 T_edge = C_edge / f_allocated if f_allocated > 0 else 0
-                T_trans = data_size * split_ratio / R_backhaul
+                # V31: 使用精确的 feature_size 计算传输时延
+                model_spec = task.get('model_spec')
+                n_layers = task.get('n_layers', 100)
+                feature_size = self._get_feature_size_at_layer(int(split_ratio * n_layers), model_spec, n_layers) if model_spec else data_size * split_ratio
+                T_trans = feature_size / R_backhaul
                 T_cloud = self._compute_cloud_delay(C_cloud, n_concurrent, n_users)
                 T_propagation_total = 2 * T_propagation
                 
