@@ -779,6 +779,7 @@ class CloudOnlyBaseline(BaselineAlgorithm):
     
     def __init__(self):
         super().__init__("Cloud-Only")
+        self.rng = np.random.default_rng(42)  # 固定种子确保可复现（用于故障模拟）
     
     def run(self, tasks: List[Dict],
             uav_resources: List[Dict],
@@ -867,6 +868,13 @@ class CloudOnlyBaseline(BaselineAlgorithm):
             success = (T_total <= deadline and
                       energy <= E_budget and
                       energy <= E_remain)  # V31: 添加剩余能量检查
+
+            # 故障模拟：与Proposed对齐，小规模实验使用5%故障概率
+            # 故障导致任务失败，即使满足所有约束条件
+            fault_prob = 0.05
+            if success and fault_prob > 0 and self.rng.random() < fault_prob:
+                success = False  # 故障导致任务失败
+
             utility = 1.0 if success else 0.0
             
             result = {
@@ -1790,6 +1798,7 @@ class DelayOptimalBaseline(BaselineAlgorithm):
         super().__init__("B12-DelayOpt")
         # 用于跟踪UAV处理的数据量（转发+计算）
         self.uav_data_processed = {}
+        self.rng = np.random.default_rng(42)  # 固定种子确保可复现（用于故障模拟）
     
     def _deploy_uavs_kmeans(self, tasks: List[Dict], n_uavs: int) -> List[Tuple[float, float]]:
         """使用KMeans根据用户位置部署UAV"""
@@ -2001,6 +2010,28 @@ class DelayOptimalBaseline(BaselineAlgorithm):
             # B12-DelayOpt不再使用额外的deadline限制，确保公平对比
             # 约束差异应该来自算法本身的选择策略，而不是不同的约束标准
             if best_uav >= 0 and best_delay <= deadline:
+                # 故障模拟：与Proposed对齐，小规模实验使用5%故障概率
+                # 故障导致任务失败，即使满足所有约束条件
+                fault_prob = 0.05
+                if fault_prob > 0 and self.rng.random() < fault_prob:
+                    # 故障导致任务失败
+                    result = {
+                        'task_id': idx,
+                        'success': False,
+                        'met_deadline': False,
+                        'delay': best_delay * 1.5,  # 故障导致时延增加
+                        'energy': best_energy * 0.5,   # 故障前已消耗部分能量
+                        'uav_id': best_uav,
+                        'utility': 0.0,
+                        'priority': priority,
+                        'split_ratio': best_split
+                    }
+                    results.append(result)
+                    self._track_task_result(result, best_uav,
+                                           compute_edge=0, compute_cloud=0)
+                    continue  # 跳过正常执行
+
+                # 正常执行
                 uav_id = best_uav
 
                 C_edge = C_total * best_split

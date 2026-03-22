@@ -2286,11 +2286,13 @@ class FullExperimentRunner:
         
         # 缩放到完整任务集
         offline_sw = best_utility * scale_factor
-        
-        # 添加理论上界修正（离线最优比贪心解约高10-20%）
-        # 确保离线最优始终 >= 在线结果（理论保证）
-        offline_sw *= 1.15
-        
+
+        # 移除人为干预：不再使用1.15倍经验修正
+        # 使用保守下界：离线最优至少不低于在线结果
+        # 这是近似离线最优（采样+贪心），理论上界可能比真实最优低5-15%
+        if offline_sw < online_sw:
+            offline_sw = online_sw  # 使用保守下界，不强制放大
+
         return max(offline_sw, 0.1)  # 确保非零
     
     def exp16_competitive_ratio(self):
@@ -2331,11 +2333,11 @@ class FullExperimentRunner:
             std_sw = np.std(online_sws)
             
             # 3. 计算真实竞争比
-            # 理论保证：离线最优 >= 在线结果，如果不满足则使用经验修正
+            # 移除人为干预：使用保守下界而非随机放大
             if offline_sw < online_sw:
-                # 离线算法可能因采样/简化导致低估，使用理论上界
-                offline_sw = online_sw * (1.10 + 0.05 * np.random.random())
-            
+                # 离线算法可能因采样/简化导致低估，使用保守下界
+                offline_sw = online_sw  # 不再使用 (1.10 + 0.05 * random())
+
             competitive_ratio = offline_sw / online_sw if online_sw > 0 else 1.0
             gap = (competitive_ratio - 1) * 100
             
