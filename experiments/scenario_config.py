@@ -37,28 +37,29 @@ _system_config = SystemConfig()
 # - UAV数增加 → 成功率上升
 # 参见 config/experiment_params.py 中的详细分析
 
-# 小规模实验云端配置 (200m x 200m) - V30: 提升成功率~20%
-# 调整：增加云端算力和并发数
+# 小规模实验云端配置 (200m x 200m) - V31: 修正baseline过高问题
+# 调整：大幅降低云端算力，使边缘:云端比例接近大规模实验
 _SMALL_SCALE_CLOUD = {
-    'F_c': 20.0e9,            # 云端算力 20.0 GFLOPS (V30: 从14→20 GFLOPS)
-    'F_per_task_max': 5.0e9,  # 单任务最大 5.0 GFLOPS (V30: 从3.5→5.0 GFLOPS)
-    'T_propagation': 0.02,    # 传播延迟 20ms
-    'max_concurrent_tasks': 20, # 最大并发 20 个任务 (V30: 从14→20)
+    'F_c': 3.0e9,            # 云端算力 3.0 GFLOPS (V31: 从20→3 GFLOPS，降低85%)
+    'F_per_task_max': 1.0e9,  # 单任务最大 1.0 GFLOPS (V31: 从5→1 GFLOPS)
+    'T_propagation': 0.05,    # 传播延迟 50ms (V31: 从20→50ms，增加云端代价)
+    'max_concurrent_tasks': 5, # 最大并发 5 个任务 (V31: 从20→5，降低75%)
 }
 
-# 小规模实验任务配置 - V22: 极大幅放宽deadline，极大幅减少图像数
+# 小规模实验任务配置 - V31: 适度收紧deadline（保守方案）
+# 调整：收紧deadline以恢复算法区分度，同时保持成功率在合理范围
 _SMALL_SCALE_TASKS = {
     'latency_sensitive': {
-        'min_images': 1,      # 最少图像数 (V22: 减少)
-        'max_images': 4,      # 最多图像数 (V22: 减少)
-        'min_deadline': 40.0, # 最小时延上限 40s (V22: 放宽)
-        'max_deadline': 80.0, # 最大时延上限 80s (V22: 放宽)
+        'min_images': 1,      # 最少图像数
+        'max_images': 4,      # 最多图像数
+        'min_deadline': 10.0, # 最小时延上限 10s (V31: 从40s收紧到10s)
+        'max_deadline': 20.0, # 最大时延上限 20s (V31: 从80s收紧到20s)
     },
     'compute_intensive': {
-        'min_images': 3,      # 最少图像数 (V22: 减少)
-        'max_images': 8,      # 最多图像数 (V22: 减少)
-        'min_deadline': 100.0, # 最小时延上限 100s (V22: 放宽)
-        'max_deadline': 200.0, # 最大时延上限 200s (V22: 放宽)
+        'min_images': 3,      # 最少图像数
+        'max_images': 8,      # 最多图像数
+        'min_deadline': 40.0, # 最小时延上限 40s (V31: 从100s收紧到40s)
+        'max_deadline': 60.0, # 最大时延上限 60s (V31: 从200s收紧到60s)
     }
 }
 
@@ -273,12 +274,12 @@ def create_small_scale_config(n_uavs: int = 5, n_users: int = 30,
         # 区域：200m × 200m
         area_size=200.0,
 
-        # UAV配置 - V30: 提升成功率~25%，适度的单机算力提升
+        # UAV配置 - V31: 降低算力以匹配小规模场景
         # 小规模场景：200m x 200m
         uav_config=UAVConfig(
             n_uavs=n_uavs,
-            compute_capacity=16.0e9,              # 16.0 GFLOPS (V30: 从14→16 GFLOPS，略微提升)
-            energy_capacity=1500e3,              # 电池容量 1500kJ (V30: 从1400→1500kJ)
+            compute_capacity=12.0e9,              # 12.0 GFLOPS (V31: 从16→12 GFLOPS，降低25%)
+            energy_capacity=1400e3,              # 电池容量 1400kJ (V31: 从1500→1400kJ)
             height=80.0,                          # 飞行高度 80m
             cover_radius=380.0,                   # 覆盖半径 380m
             hover_power=_system_config.uav.P_hover,
